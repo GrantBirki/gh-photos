@@ -1,11 +1,14 @@
 package photos
 
 import (
+	"database/sql"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/grantbirki/gh-photos/internal/types"
 	"github.com/stretchr/testify/assert"
+	_ "modernc.org/sqlite"
 )
 
 func TestCoreDataTimeToGoTime(t *testing.T) {
@@ -86,5 +89,216 @@ func TestClassifyAsset(t *testing.T) {
 	}
 }
 
-// Note: Testing the database functions would require creating a test SQLite database
-// with the appropriate schema, which is more complex and would be done in integration tests
+func TestDetectSchema(t *testing.T) {
+	tests := []struct {
+		name             string
+		setupTable       func(*sql.DB) error
+		expectedCreation string
+		expectedMod      string
+		expectedError    bool
+	}{
+		{
+			name: "iOS 14+ schema with ZCREATIONDATE",
+			setupTable: func(db *sql.DB) error {
+				_, err := db.Exec(`CREATE TABLE ZASSET (
+					Z_PK INTEGER PRIMARY KEY,
+					ZFILENAME TEXT,
+					ZDIRECTORY TEXT,
+					ZCREATIONDATE REAL,
+					ZMODIFICATIONDATE REAL,
+					ZHIDDEN INTEGER,
+					ZTRASHED INTEGER,
+					ZKINDSUBTYPE INTEGER,
+					ZBURSTIDENTIFIER TEXT,
+					ZISSCREENSHOT INTEGER,
+					ZHASADJUSTMENTS INTEGER
+				)`)
+				return err
+			},
+			expectedCreation: "ZCREATIONDATE",
+			expectedMod:      "ZMODIFICATIONDATE",
+			expectedError:    false,
+		},
+		{
+			name: "iOS 12-13 schema with ZDATECREATED",
+			setupTable: func(db *sql.DB) error {
+				_, err := db.Exec(`CREATE TABLE ZASSET (
+					Z_PK INTEGER PRIMARY KEY,
+					ZFILENAME TEXT,
+					ZDIRECTORY TEXT,
+					ZDATECREATED REAL,
+					ZDATEMODIFIED REAL,
+					ZHIDDEN INTEGER,
+					ZTRASHED INTEGER,
+					ZKINDSUBTYPE INTEGER,
+					ZBURSTIDENTIFIER TEXT,
+					ZISSCREENSHOT INTEGER,
+					ZHASADJUSTMENTS INTEGER
+				)`)
+				return err
+			},
+			expectedCreation: "ZDATECREATED",
+			expectedMod:      "ZDATEMODIFIED",
+			expectedError:    false,
+		},
+		{
+			name: "fallback schema with ZADDEDDATE",
+			setupTable: func(db *sql.DB) error {
+				_, err := db.Exec(`CREATE TABLE ZASSET (
+					Z_PK INTEGER PRIMARY KEY,
+					ZFILENAME TEXT,
+					ZDIRECTORY TEXT,
+					ZADDEDDATE REAL,
+					ZMODIFIEDDATE REAL,
+					ZHIDDEN INTEGER,
+					ZTRASHED INTEGER,
+					ZKINDSUBTYPE INTEGER,
+					ZBURSTIDENTIFIER TEXT,
+					ZISSCREENSHOT INTEGER,
+					ZHASADJUSTMENTS INTEGER
+				)`)
+				return err
+			},
+			expectedCreation: "ZADDEDDATE",
+			expectedMod:      "ZMODIFIEDDATE",
+			expectedError:    false,
+		},
+		{
+			name: "mixed columns prefer ZCREATIONDATE",
+			setupTable: func(db *sql.DB) error {
+				_, err := db.Exec(`CREATE TABLE ZASSET (
+					Z_PK INTEGER PRIMARY KEY,
+					ZFILENAME TEXT,
+					ZDIRECTORY TEXT,
+					ZCREATIONDATE REAL,
+					ZDATECREATED REAL,
+					ZADDEDDATE REAL,
+					ZMODIFICATIONDATE REAL,
+					ZHIDDEN INTEGER,
+					ZTRASHED INTEGER,
+					ZKINDSUBTYPE INTEGER,
+					ZBURSTIDENTIFIER TEXT,
+					ZISSCREENSHOT INTEGER,
+					ZHASADJUSTMENTS INTEGER
+				)`)
+				return err
+			},
+			expectedCreation: "ZCREATIONDATE",
+			expectedMod:      "ZMODIFICATIONDATE",
+			expectedError:    false,
+		},
+		{
+			name: "no date columns should error",
+			setupTable: func(db *sql.DB) error {
+				_, err := db.Exec(`CREATE TABLE ZASSET (
+					Z_PK INTEGER PRIMARY KEY,
+					ZFILENAME TEXT,
+					ZDIRECTORY TEXT,
+					ZHIDDEN INTEGER,
+					ZTRASHED INTEGER
+				)`)
+				return err
+			},
+			expectedError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create temporary database
+			tmpDir := t.TempDir()
+			dbPath := filepath.Join(tmpDir, "test.sqlite")
+
+			db, err := sql.Open("sqlite", dbPath)
+			if !assert.NoError(t, err) {
+				return
+			}
+			defer db.Close()
+
+			// Setup test table
+			err = tt.setupTable(db)
+			if !assert.NoError(t, err) {
+				return
+			}
+
+			// Create Database instance
+			photosDB := &Database{db: db}
+
+			// Test schema detection
+			schema, err := photosDB.detectSchema()
+
+			if tt.expectedError {
+				assert.Error(t, err)
+				return
+			}
+
+			if !assert.NoError(t, err) {
+				return
+			}
+			assert.Equal(t, tt.expectedCreation, schema.CreationDateColumn)
+			assert.Equal(t, tt.expectedMod, schema.ModDateColumn)
+			assert.Equal(t, "ZASSET", schema.TableName)
+		})
+	}
+}
+
+func TestGetAssets_SchemaAdaptive(t *testing.T) {
+	// This is an integration test that verifies GetAssets works with different schemas
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "Photos.sqlite")
+
+	db, err := sql.Open("sqlite", dbPath)
+	if !assert.NoError(t, err) {
+		return
+	}
+	defer db.Close()
+
+	// Create table with iOS 12-13 schema (ZDATECREATED instead of ZCREATIONDATE)
+	_, err = db.Exec(`CREATE TABLE ZASSET (
+		Z_PK INTEGER PRIMARY KEY,
+		ZFILENAME TEXT,
+		ZDIRECTORY TEXT,
+		ZDATECREATED REAL,
+		ZDATEMODIFIED REAL,
+		ZHIDDEN INTEGER,
+		ZTRASHED INTEGER,
+		ZKINDSUBTYPE INTEGER,
+		ZBURSTIDENTIFIER TEXT,
+		ZISSCREENSHOT INTEGER,
+		ZHASADJUSTMENTS INTEGER
+	)`)
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	// Insert test data using a known Core Data timestamp
+	// Let's use a simple timestamp: 86400 seconds = 1 day after 2001-01-01 = 2001-01-02 00:00:00 UTC
+	coreDataTimestamp := 86400.0
+	_, err = db.Exec(`INSERT INTO ZASSET (
+		Z_PK, ZFILENAME, ZDIRECTORY, ZDATECREATED, ZDATEMODIFIED,
+		ZHIDDEN, ZTRASHED, ZKINDSUBTYPE, ZBURSTIDENTIFIER, ZISSCREENSHOT, ZHASADJUSTMENTS
+	) VALUES (1, 'IMG_001.HEIC', '100APPLE', ?, ?, 0, 0, 0, NULL, 0, 0)`, coreDataTimestamp, coreDataTimestamp)
+	if !assert.NoError(t, err) {
+		return
+	}
+
+	// Create Database instance and test GetAssets
+	photosDB := &Database{db: db}
+
+	// This should work without the ZCREATIONDATE error
+	assets, err := photosDB.GetAssets("/fake/dcim/path")
+	if !assert.NoError(t, err) {
+		return
+	}
+	if !assert.Len(t, assets, 1) {
+		return
+	}
+
+	assert.Equal(t, "IMG_001.HEIC", assets[0].Filename)
+	assert.Equal(t, "1", assets[0].ID)
+	assert.False(t, assets[0].CreationDate.IsZero())
+
+	// Verify the date conversion worked correctly
+	expectedTime := time.Date(2001, 1, 2, 0, 0, 0, 0, time.UTC)
+	assert.Equal(t, expectedTime, assets[0].CreationDate)
+}

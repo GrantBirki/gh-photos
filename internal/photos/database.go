@@ -44,27 +44,115 @@ func (d *Database) Close() error {
 	return nil
 }
 
+// SchemaInfo holds information about the Photos.sqlite schema
+type SchemaInfo struct {
+	CreationDateColumn string
+	ModDateColumn      string
+	TableName          string
+}
+
+// detectSchema analyzes the Photos.sqlite schema to determine column names
+func (d *Database) detectSchema() (*SchemaInfo, error) {
+	info := &SchemaInfo{
+		TableName: "ZASSET", // Default table name
+	}
+
+	// Check if ZASSET table exists and get its columns
+	rows, err := d.db.Query("PRAGMA table_info(ZASSET)")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ZASSET table info: %w", err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var cid int
+		var name, dataType string
+		var notNull, pk int
+		var defaultValue sql.NullString
+
+		err := rows.Scan(&cid, &name, &dataType, &notNull, &defaultValue, &pk)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan column info: %w", err)
+		}
+		columns = append(columns, name)
+	}
+
+	if len(columns) == 0 {
+		return nil, fmt.Errorf("ZASSET table has no columns or doesn't exist")
+	}
+
+	// Determine creation date column based on what's available
+	// Priority order: ZCREATIONDATE (iOS 14+) > ZDATECREATED (iOS 12-13) > ZADDEDDATE (fallback)
+	for _, col := range columns {
+		switch col {
+		case "ZCREATIONDATE":
+			info.CreationDateColumn = "ZCREATIONDATE"
+		case "ZDATECREATED":
+			if info.CreationDateColumn == "" {
+				info.CreationDateColumn = "ZDATECREATED"
+			}
+		case "ZADDEDDATE":
+			if info.CreationDateColumn == "" {
+				info.CreationDateColumn = "ZADDEDDATE"
+			}
+		}
+	}
+
+	// Determine modification date column
+	for _, col := range columns {
+		switch col {
+		case "ZMODIFICATIONDATE":
+			info.ModDateColumn = "ZMODIFICATIONDATE"
+		case "ZDATEMODIFIED":
+			if info.ModDateColumn == "" {
+				info.ModDateColumn = "ZDATEMODIFIED"
+			}
+		case "ZMODIFIEDDATE":
+			if info.ModDateColumn == "" {
+				info.ModDateColumn = "ZMODIFIEDDATE"
+			}
+		}
+	}
+
+	// Fallback to creation date if no modification date column found
+	if info.ModDateColumn == "" {
+		info.ModDateColumn = info.CreationDateColumn
+	}
+
+	if info.CreationDateColumn == "" {
+		return nil, fmt.Errorf("no suitable creation date column found in ZASSET table")
+	}
+
+	return info, nil
+}
+
 // GetAssets retrieves all assets from the Photos database
 func (d *Database) GetAssets(dcimPath string) ([]*types.Asset, error) {
-	// Query to get asset information from Photos database
-	// This query is based on common iPhone Photos.sqlite schema
-	query := `
+	// Detect the schema to use appropriate column names
+	schema, err := d.detectSchema()
+	if err != nil {
+		return nil, fmt.Errorf("failed to detect schema: %w", err)
+	}
+
+	// Build query with detected column names
+	query := fmt.Sprintf(`
 		SELECT 
 			Z_PK,
 			ZFILENAME,
 			ZDIRECTORY,
-			ZCREATIONDATE,
-			ZMODIFICATIONDATE,
+			%s,
+			%s,
 			ZHIDDEN,
 			ZTRASHED,
 			ZKINDSUBTYPE,
 			ZBURSTIDENTIFIER,
 			ZISSCREENSHOT,
 			ZHASADJUSTMENTS
-		FROM ZASSET 
+		FROM %s 
 		WHERE ZFILENAME IS NOT NULL
-		ORDER BY ZCREATIONDATE ASC
-	`
+		ORDER BY %s ASC
+	`, schema.CreationDateColumn, schema.ModDateColumn, schema.TableName, schema.CreationDateColumn)
 
 	rows, err := d.db.Query(query)
 	if err != nil {
@@ -103,7 +191,7 @@ func (d *Database) GetAssets(dcimPath string) ([]*types.Asset, error) {
 			&hasAdjustments,
 		)
 		if err != nil {
-			return nil, fmt.Errorf("failed to scan row: %w", err)
+			return nil, fmt.Errorf("failed to scan row (using schema with creation date column %s): %w", schema.CreationDateColumn, err)
 		}
 
 		if !filename.Valid || filename.String == "" {
