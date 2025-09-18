@@ -75,6 +75,44 @@ C:\Users\<username>\AppData\Roaming\Apple Computer\MobileSync\Backup\
 
 This means you can simply point to `/Users/username/Library/Application Support/MobileSync/` and the tool will find the actual backup directory automatically.
 
+## iTunes Backup Extraction 🗂️
+
+The `extract` command allows you to extract unencrypted iTunes/Finder backups into a readable directory structure before processing. This is useful when your backup files are in the hashed format that iTunes uses internally.
+
+### Why Extract?
+
+iTunes and Finder create backups with hashed filenames (like `00/1a2b3c4e5f...`) instead of the original file names. The extract command:
+
+- ✅ **Reconstructs original paths** using the backup's `Manifest.db`
+- ✅ **Organizes by domain** (MediaDomain, HomeDomain, etc.)
+- ✅ **Only supports unencrypted backups** (encrypted backups are rejected for security)
+- ✅ **Shows progress and provides detailed summary**
+- ✅ **Optionally verifies file integrity** with checksums
+
+### Extract Examples
+
+```bash
+# Basic extraction (creates ./extracted-backup/)
+gh photos extract /path/to/backup
+
+# Extract to specific directory
+gh photos extract /path/to/backup ./my-extracted-backup
+
+# Extract with verification and progress
+gh photos extract /backup ./extracted --verify --progress
+
+# Skip files that already exist
+gh photos extract /backup ./extracted --skip-existing
+```
+
+After extraction, you can run normal sync operations:
+
+```bash
+# Extract first, then sync
+gh photos extract /path/to/backup ./extracted
+gh photos sync ./extracted/MediaDomain gdrive:photos
+```
+
 ## Usage 🚀
 
 The `gh-photos` extension provides three main commands for working with iPhone backup photos:
@@ -82,6 +120,10 @@ The `gh-photos` extension provides three main commands for working with iPhone b
 ### Basic Commands
 
 ```bash
+# Extract iTunes/Finder backup to readable directory structure
+gh photos extract /path/to/backup
+gh photos extract /path/to/backup ./extracted-backup
+
 # Sync photos from iPhone backup to Google Drive
 gh photos sync /path/to/backup gdrive:photos
 

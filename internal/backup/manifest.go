@@ -281,3 +281,40 @@ func (m *ManifestDB) HasMediaFiles() (bool, error) {
 
 	return count > 0, nil
 }
+
+// GetAllFiles returns all files from the manifest for extraction
+func (m *ManifestDB) GetAllFiles() ([]FileRecord, error) {
+	query := `
+		SELECT fileID, domain, relativePath, flags, file 
+		FROM Files 
+		ORDER BY domain, relativePath
+	`
+
+	rows, err := m.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query all files: %w", err)
+	}
+	defer rows.Close()
+
+	var records []FileRecord
+	for rows.Next() {
+		var record FileRecord
+		err := rows.Scan(
+			&record.FileID,
+			&record.Domain,
+			&record.RelativePath,
+			&record.Flags,
+			&record.File,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan row: %w", err)
+		}
+		records = append(records, record)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating rows: %w", err)
+	}
+
+	return records, nil
+}

@@ -13,6 +13,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/grantbirki/gh-photos/internal/audit"
 	"github.com/grantbirki/gh-photos/internal/backup"
+	"github.com/grantbirki/gh-photos/internal/logger"
 	"github.com/grantbirki/gh-photos/internal/photos"
 	"github.com/grantbirki/gh-photos/internal/uploader"
 	"github.com/grantbirki/gh-photos/internal/version"
@@ -56,6 +57,7 @@ The tool supports:
 	cmd.AddCommand(NewSyncCommand())
 	cmd.AddCommand(NewValidateCommand())
 	cmd.AddCommand(NewListCommand())
+	cmd.AddCommand(NewExtractCommand())
 
 	return cmd
 }
@@ -240,6 +242,127 @@ including their classification, flags, and file locations.`,
 	cmd.Flags().String("format", "table", "output format (table, json)")
 
 	return cmd
+}
+
+// NewExtractCommand creates the extract subcommand
+func NewExtractCommand() *cobra.Command {
+	var (
+		outputPath   string
+		skipExisting bool
+		verify       bool
+		progress     bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "extract <backup-path> [output-path]",
+		Short: "Extract unencrypted iTunes/Finder backup to readable directory structure",
+		Long: `Extract reconstructs the original directory structure from an unencrypted iTunes or Finder backup.
+
+This command reads the Manifest.db file to map hashed backup files back to their original
+paths and domains, creating a readable directory structure similar to the original device.
+
+Only unencrypted backups are supported. Encrypted backups will be rejected with an error.
+
+Examples:
+  gh photos extract /path/to/backup
+  gh photos extract /backup/iPhone ./extracted --skip-existing
+  gh photos extract /backup ./extracted --verify --progress`,
+		Args:         cobra.RangeArgs(1, 2),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			backupPath := args[0]
+
+			// Use provided output path or default
+			if len(args) > 1 {
+				outputPath = args[1]
+			}
+			if outputPath == "" {
+				outputPath = "./extracted-backup"
+			}
+
+			return runExtract(backupPath, outputPath, skipExisting, verify, progress)
+		},
+	}
+
+	// Extract-specific flags
+	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "output directory (default: ./extracted-backup)")
+	cmd.Flags().BoolVar(&skipExisting, "skip-existing", false, "skip files that already exist in output directory")
+	cmd.Flags().BoolVar(&verify, "verify", false, "verify extracted files by comparing checksums")
+	cmd.Flags().BoolVar(&progress, "progress", true, "show extraction progress")
+
+	return cmd
+}
+
+// runExtract executes the backup extraction
+func runExtract(backupPath, outputPath string, skipExisting, verify, progress bool) error {
+	// Create logger
+	loggerConfig := logger.Config{
+		Level:  logger.LevelInfo,
+		Output: os.Stdout,
+	}
+	log := logger.New(loggerConfig)
+
+	log.Info("Starting iTunes backup extraction",
+		"backup_path", backupPath,
+		"output_path", outputPath)
+
+	// Create extractor
+	extractConfig := backup.ExtractConfig{
+		BackupPath:   backupPath,
+		OutputPath:   outputPath,
+		SkipExisting: skipExisting,
+		Verify:       verify,
+		Progress:     progress,
+		Logger:       log,
+	}
+
+	extractor, err := backup.NewExtractor(extractConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create extractor: %w", err)
+	}
+	defer extractor.Close()
+
+	// Perform extraction
+	summary, err := extractor.Extract()
+	if err != nil {
+		return fmt.Errorf("extraction failed: %w", err)
+	}
+
+	// Display summary
+	color.Green("\n✓ Backup extraction completed successfully!")
+	fmt.Printf("\nExtraction Summary:\n")
+	fmt.Printf("  Total files processed: %d\n", summary.TotalFiles)
+	fmt.Printf("  Files extracted: %d\n", summary.ExtractedFiles)
+	fmt.Printf("  Files skipped: %d\n", summary.SkippedFiles)
+	fmt.Printf("  Files failed: %d\n", summary.FailedFiles)
+	fmt.Printf("  Domains found: %d\n", summary.DomainsFound)
+	fmt.Printf("  Total size: %s\n", formatBytes(summary.TotalSize))
+	fmt.Printf("  Extracted size: %s\n", formatBytes(summary.ExtractedSize))
+	fmt.Printf("  Duration: %v\n", summary.Duration.Round(time.Second))
+
+	if len(summary.Errors) > 0 {
+		color.Yellow("\nWarnings/Errors:")
+		for _, errMsg := range summary.Errors {
+			fmt.Printf("  - %s\n", errMsg)
+		}
+	}
+
+	fmt.Printf("\nExtracted backup is available at: %s\n", outputPath)
+	return nil
+}
+
+// formatBytes formats bytes in human readable format
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // runSync executes the sync operation
