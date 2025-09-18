@@ -328,24 +328,37 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 		return fmt.Errorf("extraction failed: %w", err)
 	}
 
-	// Display summary
-	color.Green("\n✓ Backup extraction completed successfully!")
+	// Display warnings/errors first
+	if len(summary.CriticalErrors) > 0 {
+		color.Yellow("\nCritical Errors:")
+		for _, errMsg := range summary.CriticalErrors {
+			fmt.Printf("  - %s\n", errMsg)
+		}
+		fmt.Println()
+	}
+
+	if summary.FilesystemCompatErrors > 0 {
+		color.Cyan("Note: %d files were skipped due to filesystem compatibility issues (invalid characters for this OS)", summary.FilesystemCompatErrors)
+		color.Cyan("These are typically app-specific files and don't affect photo/media extraction.")
+		fmt.Println()
+	}
+
+	// Display success and summary last
+	color.Green("✓ Backup extraction completed successfully!")
 	fmt.Printf("\nExtraction Summary:\n")
 	fmt.Printf("  Total files processed: %d\n", summary.TotalFiles)
 	fmt.Printf("  Files extracted: %d\n", summary.ExtractedFiles)
 	fmt.Printf("  Files skipped: %d\n", summary.SkippedFiles)
-	fmt.Printf("  Files failed: %d\n", summary.FailedFiles)
+	if summary.FilesystemCompatErrors > 0 {
+		fmt.Printf("  Files failed (critical): %d\n", len(summary.CriticalErrors))
+		fmt.Printf("  Files skipped (filesystem): %d\n", summary.FilesystemCompatErrors)
+	} else {
+		fmt.Printf("  Files failed: %d\n", summary.FailedFiles)
+	}
 	fmt.Printf("  Domains found: %d\n", summary.DomainsFound)
 	fmt.Printf("  Total size: %s\n", formatBytes(summary.TotalSize))
 	fmt.Printf("  Extracted size: %s\n", formatBytes(summary.ExtractedSize))
 	fmt.Printf("  Duration: %v\n", summary.Duration.Round(time.Second))
-
-	if len(summary.Errors) > 0 {
-		color.Yellow("\nWarnings/Errors:")
-		for _, errMsg := range summary.Errors {
-			fmt.Printf("  - %s\n", errMsg)
-		}
-	}
 
 	fmt.Printf("\nExtracted backup is available at: %s\n", outputPath)
 	return nil

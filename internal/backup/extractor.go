@@ -24,15 +24,17 @@ type ExtractConfig struct {
 
 // ExtractSummary provides statistics about the extraction operation
 type ExtractSummary struct {
-	TotalFiles     int           `json:"total_files"`
-	ExtractedFiles int           `json:"extracted_files"`
-	SkippedFiles   int           `json:"skipped_files"`
-	FailedFiles    int           `json:"failed_files"`
-	DomainsFound   int           `json:"domains_found"`
-	TotalSize      int64         `json:"total_size"`
-	ExtractedSize  int64         `json:"extracted_size"`
-	Duration       time.Duration `json:"duration"`
-	Errors         []string      `json:"errors,omitempty"`
+	TotalFiles             int           `json:"total_files"`
+	ExtractedFiles         int           `json:"extracted_files"`
+	SkippedFiles           int           `json:"skipped_files"`
+	FailedFiles            int           `json:"failed_files"`
+	DomainsFound           int           `json:"domains_found"`
+	TotalSize              int64         `json:"total_size"`
+	ExtractedSize          int64         `json:"extracted_size"`
+	Duration               time.Duration `json:"duration"`
+	Errors                 []string      `json:"errors,omitempty"`
+	FilesystemCompatErrors int           `json:"filesystem_compat_errors"`
+	CriticalErrors         []string      `json:"critical_errors,omitempty"`
 }
 
 // Extractor handles iTunes backup extraction
@@ -153,13 +155,25 @@ func (e *Extractor) Extract() (*ExtractSummary, error) {
 
 		if err := e.extractFile(&file); err != nil {
 			e.summary.FailedFiles++
-			e.summary.Errors = append(e.summary.Errors,
-				fmt.Sprintf("Failed to extract %s: %v", file.RelativePath, err))
-			e.config.Logger.Warn("Failed to extract file",
-				"domain", file.Domain,
-				"path", file.RelativePath,
-				"file_id", file.FileID,
-				"error", err)
+
+			// Categorize the error
+			if isFilesystemCompatibilityError(err, file.RelativePath) {
+				e.summary.FilesystemCompatErrors++
+				// Only log filesystem compatibility errors at debug level
+				e.config.Logger.Debug("Skipped file due to filesystem compatibility",
+					"domain", file.Domain,
+					"path", file.RelativePath,
+					"error", err)
+			} else {
+				// This is a critical error worth showing to the user
+				errorMsg := fmt.Sprintf("[%s] %s: %v", file.Domain, file.RelativePath, err)
+				e.summary.CriticalErrors = append(e.summary.CriticalErrors, errorMsg)
+				e.config.Logger.Warn("Failed to extract file",
+					"domain", file.Domain,
+					"path", file.RelativePath,
+					"file_id", file.FileID,
+					"error", err)
+			}
 			continue
 		}
 	}
@@ -324,6 +338,43 @@ func isBackupEncrypted(backupPath string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// isFilesystemCompatibilityError checks if an error is due to filesystem limitations
+// These are common on Windows due to invalid characters in filenames
+func isFilesystemCompatibilityError(err error, relativePath string) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := strings.ToLower(err.Error())
+
+	// Windows-specific errors
+	if strings.Contains(errStr, "the filename, directory name, or volume label syntax is incorrect") ||
+		strings.Contains(errStr, "invalid character") ||
+		strings.Contains(errStr, "bad file descriptor") {
+		return true
+	}
+
+	// Check for problematic characters in the path that are invalid on Windows
+	invalidChars := []string{":", "*", "?", "\"", "<", ">", "|"}
+	for _, char := range invalidChars {
+		if strings.Contains(relativePath, char) {
+			return true
+		}
+	}
+
+	// Check for URL-like paths (common cause of errors)
+	if strings.HasPrefix(relativePath, "http") || strings.Contains(relativePath, "://") {
+		return true
+	}
+
+	// Check for bundle identifier patterns (contain colons)
+	if strings.Contains(relativePath, ".plist") && strings.Count(relativePath, ":") > 1 {
+		return true
+	}
+
+	return false
 }
 
 // validateManifestSchema validates that the Manifest.db has the expected schema
