@@ -40,7 +40,7 @@ func TestNewSyncCommand(t *testing.T) {
 func TestNewValidateCommand(t *testing.T) {
 	cmd := NewValidateCommand()
 
-	assert.Equal(t, "validate <backup-path>", cmd.Use)
+	assert.Equal(t, "validate [backup-path]", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 }
 
