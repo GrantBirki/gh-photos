@@ -35,7 +35,7 @@ func TestString(t *testing.T) {
 		result := String()
 
 		// Test the full format
-		expected := "v1.0.0 (abc123) built at 2025-04-15\nhttps://github.com/grantbirki/gh-pin/releases/tag/v1.0.0"
+		expected := "v1.0.0 (abc123) built at 2025-04-15\nhttps://github.com/grantbirki/gh-photos/releases/tag/v1.0.0"
 		if result != expected {
 			t.Errorf("Expected version string to be:\n%q\nbut got:\n%q", expected, result)
 		}
@@ -64,7 +64,7 @@ func TestString(t *testing.T) {
 		result := String()
 
 		// Check if the values from build info were used
-		expected := "dev (mock-commit-hash) built at mock-build-time\nhttps://github.com/grantbirki/gh-pin/releases/tag/dev"
+		expected := "dev (mock-commit-hash) built at mock-build-time\nhttps://github.com/grantbirki/gh-photos/releases/tag/dev"
 		if result != expected {
 			t.Errorf("Expected version string to be:\n%q\nbut got:\n%q", expected, result)
 		}
@@ -87,7 +87,7 @@ func TestString(t *testing.T) {
 		result := String()
 
 		// The values should remain unchanged
-		expected := "dev (unchanged-commit) built at unchanged-date\nhttps://github.com/grantbirki/gh-pin/releases/tag/dev"
+		expected := "dev (unchanged-commit) built at unchanged-date\nhttps://github.com/grantbirki/gh-photos/releases/tag/dev"
 		if result != expected {
 			t.Errorf("Expected version string to be:\n%q\nbut got:\n%q", expected, result)
 		}
@@ -115,7 +115,7 @@ func TestString(t *testing.T) {
 		result := String()
 
 		// ldflags values should be used, not VCS
-		expected := "v2.0.0 (ldflags-commit) built at ldflags-time\nhttps://github.com/grantbirki/gh-pin/releases/tag/v2.0.0"
+		expected := "v2.0.0 (ldflags-commit) built at ldflags-time\nhttps://github.com/grantbirki/gh-photos/releases/tag/v2.0.0"
 		if result != expected {
 			t.Errorf("Expected version string to be:\n%q\nbut got:\n%q", expected, result)
 		}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/grantbirki/gh-photos/internal/photos"
 	"github.com/grantbirki/gh-photos/internal/types"
@@ -210,7 +211,7 @@ func findDCIMDirectory(backupPath string) (string, error) {
 
 // inferMimeType returns the MIME type based on file extension
 func inferMimeType(filename string) string {
-	ext := filepath.Ext(filename)
+	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".heic", ".heif":
 		return "image/heif"

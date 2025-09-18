@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -95,7 +96,7 @@ func (a *Asset) IsValid() bool {
 
 // ClassifyByExtension determines asset type based on file extension
 func ClassifyByExtension(filename string) AssetType {
-	ext := filepath.Ext(filename)
+	ext := strings.ToLower(filepath.Ext(filename))
 	switch ext {
 	case ".heic", ".heif", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tiff", ".webp":
 		return AssetTypePhoto
