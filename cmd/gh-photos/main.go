@@ -32,6 +32,12 @@ type CommandMetadata struct {
 	AssetCounts AssetCounts   `json:"asset_counts"`
 }
 
+// ExtractionMetadata contains comprehensive metadata for extracted backups
+type ExtractionMetadata struct {
+	CommandMetadata *CommandMetadata `json:"command_metadata"`
+	Assets          []*types.Asset   `json:"assets"`
+}
+
 // SystemInfo contains information about the system running the CLI
 type SystemInfo struct {
 	OS       string `json:"os"`
@@ -413,12 +419,32 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 	totalFiles := int64(summary.TotalFiles)
 	metadata.IOSBackup.TotalFiles = &totalFiles
 
-	// Display metadata summary (without asset counts for extract command)
-	metadata.printSummaryForExtract()
+	// Extract Photos.sqlite data for sync operations
+	var assets []*types.Asset
+	if parser, err := backup.NewBackupParser(backupPath, logger.New(logger.Config{Level: logger.LevelWarn, Output: os.Stderr})); err == nil {
+		if extractedAssets, err := parser.ParseAssets(); err == nil {
+			assets = extractedAssets
+			// Set asset counts for display
+			metadata.setAssetCounts(assets)
+		} else {
+			fmt.Printf("Warning: Could not extract Photos.sqlite data: %v\n", err)
+		}
+		parser.Close()
+	} else {
+		fmt.Printf("Warning: Could not access Photos.sqlite for metadata: %v\n", err)
+	}
 
-	// Save metadata to a manifest file in the output directory
+	// Display metadata summary (with asset counts for extract command since we have them now)
+	metadata.printSummary()
+
+	// Save comprehensive extraction metadata including asset data
+	extractionMetadata := ExtractionMetadata{
+		CommandMetadata: metadata,
+		Assets:          assets,
+	}
+
 	manifestPath := filepath.Join(outputPath, "extraction-metadata.json")
-	if err := metadata.saveToManifest(manifestPath); err != nil {
+	if err := saveExtractionMetadata(extractionMetadata, manifestPath); err != nil {
 		fmt.Printf("Warning: Could not save metadata to %s: %v\n", manifestPath, err)
 	} else {
 		fmt.Printf("\n💾 Metadata saved to: %s\n", manifestPath)
@@ -578,36 +604,44 @@ func (m *CommandMetadata) printSummaryForExtract() {
 
 // saveToManifest adds metadata to manifest JSON file
 func (m *CommandMetadata) saveToManifest(manifestPath string) error {
-	// Check if manifest file exists
+	// Read existing manifest if it exists
 	var manifestData map[string]interface{}
-
-	if _, err := os.Stat(manifestPath); err == nil {
-		// Read existing manifest
-		data, err := os.ReadFile(manifestPath)
-		if err != nil {
-			return fmt.Errorf("failed to read existing manifest: %w", err)
-		}
-
+	if data, err := os.ReadFile(manifestPath); err == nil {
 		if err := json.Unmarshal(data, &manifestData); err != nil {
-			// If JSON is invalid, start fresh
 			manifestData = make(map[string]interface{})
 		}
-	} else {
-		// Create new manifest
+	}
+
+	// Ensure manifestData is initialized
+	if manifestData == nil {
 		manifestData = make(map[string]interface{})
 	}
 
-	// Add metadata section
+	// Add command metadata
 	manifestData["command_metadata"] = m
 
 	// Write updated manifest
-	updatedData, err := json.MarshalIndent(manifestData, "", "  ")
+	data, err := json.MarshalIndent(manifestData, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal manifest: %w", err)
 	}
 
-	if err := os.WriteFile(manifestPath, updatedData, 0644); err != nil {
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
 		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	return nil
+}
+
+// saveExtractionMetadata saves comprehensive extraction metadata including asset data
+func saveExtractionMetadata(metadata ExtractionMetadata, manifestPath string) error {
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal extraction metadata: %w", err)
+	}
+
+	if err := os.WriteFile(manifestPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write extraction metadata: %w", err)
 	}
 
 	return nil
@@ -1102,21 +1136,13 @@ func loadLastCommandConfig(config *uploader.Config, cmd *cobra.Command, args []s
 func displaySyncSuggestion(extractedPath string) {
 	fmt.Printf("\n🎉 Great! Now that the iPhone backup extraction has completed, the next step for most people is to sync photos to a remote destination.\n")
 
-	// Try to load the last sync command from the audit trail
-	trail, err := audit.LoadLatestManifest()
-	if err == nil && trail.Metadata.Invocation.Remote != "" {
-		// Reconstruct the sync command from the audit trail
-		syncCmd := buildSyncCommand(trail.Metadata.Invocation, extractedPath)
-		fmt.Printf("\n💡 Based on your previous sync command, you might want to run:\n")
-		fmt.Printf("   gh photos %s\n", syncCmd)
-	} else {
-		// Show generic sync command
-		fmt.Printf("\n💡 To sync your photos, you can run:\n")
-		fmt.Printf("   gh photos sync %s <remote-destination>\n", extractedPath)
-		fmt.Printf("\n   Replace <remote-destination> with your preferred destination (e.g., 's3:my-bucket/photos')\n")
-	}
-
-	fmt.Printf("\n   Use 'gh photos sync --help' for more options and examples.\n")
+	fmt.Printf("\nTo sync your photos to a remote destination, you can now use the extracted directory directly:\n")
+	fmt.Printf("  gh photos sync %s <remote-destination>\n", extractedPath)
+	fmt.Printf("\nFor example:\n")
+	fmt.Printf("  gh photos sync %s gdrive:Photos\n", extractedPath)
+	fmt.Printf("  gh photos sync %s s3:my-bucket/photos\n", extractedPath)
+	fmt.Printf("\n✨ The sync command will use the metadata from extraction-metadata.json to apply filtering rules (hidden photos, date ranges, etc.)\n")
+	fmt.Printf("\nFor more sync options, run: gh photos sync --help\n")
 }
 
 // buildSyncCommand reconstructs a sync command from audit trail invocation data

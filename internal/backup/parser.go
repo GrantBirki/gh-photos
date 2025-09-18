@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,10 +14,12 @@ import (
 
 // BackupParser handles parsing of iPhone backup directories
 type BackupParser struct {
-	backupPath   string
-	photosDB     *photos.Database
-	dcimPath     string
-	manifestPath string
+	backupPath      string
+	photosDB        *photos.Database
+	dcimPath        string
+	manifestPath    string
+	isExtracted     bool
+	extractedAssets []*types.Asset
 }
 
 // NewBackupParser creates a new backup parser for the given backup directory
@@ -32,6 +35,14 @@ func NewBackupParser(backupPath string, logger *logger.Logger) (*BackupParser, e
 		return nil, fmt.Errorf("invalid backup directory: %w", err)
 	}
 
+	// Check if this is an extracted directory
+	extractionMetadataPath := filepath.Join(backupPath, "extraction-metadata.json")
+	if _, err := os.Stat(extractionMetadataPath); err == nil {
+		// This is an extracted directory - create a parser that works with metadata
+		return NewExtractedBackupParser(backupPath, extractionMetadataPath)
+	}
+
+	// This is an original backup directory - use traditional parsing
 	// Find Photos.sqlite in the backup
 	photosDBPath, err := findPhotosDatabase(backupPath)
 	if err != nil {
@@ -58,6 +69,59 @@ func NewBackupParser(backupPath string, logger *logger.Logger) (*BackupParser, e
 		photosDB:     photosDB,
 		dcimPath:     dcimPath,
 		manifestPath: manifestPath,
+		isExtracted:  false,
+	}, nil
+}
+
+// NewExtractedBackupParser creates a backup parser for extracted directories
+func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, error) {
+	// Read extraction metadata
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read extraction metadata: %w", err)
+	}
+
+	var extractionMetadata struct {
+		Assets []*types.Asset `json:"assets"`
+	}
+	if err := json.Unmarshal(data, &extractionMetadata); err != nil {
+		return nil, fmt.Errorf("failed to parse extraction metadata: %w", err)
+	}
+
+	// Update asset source paths to point to extracted files
+	for _, asset := range extractionMetadata.Assets {
+		// The extracted structure organizes files by domain, e.g.:
+		// MediaDomain/DCIM/100APPLE/IMG_001.HEIC
+		// We need to reconstruct the full path from original SourcePath
+		if strings.Contains(asset.SourcePath, "DCIM") {
+			// Extract the DCIM path portion
+			parts := strings.Split(asset.SourcePath, "/")
+			var dcimIndex int
+			for i, part := range parts {
+				if part == "DCIM" {
+					dcimIndex = i
+					break
+				}
+			}
+			if dcimIndex > 0 {
+				// Reconstruct path: backupPath/MediaDomain/DCIM/folder/filename
+				relativePath := filepath.Join(parts[dcimIndex:]...)
+				asset.SourcePath = filepath.Join(backupPath, "MediaDomain", relativePath)
+			} else {
+				// Fallback: assume it's in MediaDomain/DCIM
+				asset.SourcePath = filepath.Join(backupPath, "MediaDomain", "DCIM", asset.Filename)
+			}
+		} else {
+			// For non-DCIM files, place in appropriate domain
+			asset.SourcePath = filepath.Join(backupPath, "MediaDomain", asset.Filename)
+		}
+	}
+
+	return &BackupParser{
+		backupPath:      backupPath,
+		dcimPath:        backupPath,
+		isExtracted:     true,
+		extractedAssets: extractionMetadata.Assets,
 	}, nil
 }
 
@@ -71,6 +135,24 @@ func (bp *BackupParser) Close() error {
 
 // ParseAssets extracts all assets from the backup
 func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
+	if bp.isExtracted {
+		// For extracted directories, return pre-loaded assets from metadata
+		var validAssets []*types.Asset
+		for _, asset := range bp.extractedAssets {
+			if err := bp.enrichAsset(asset); err != nil {
+				// Log warning but continue processing
+				fmt.Fprintf(os.Stderr, "Warning: failed to enrich asset %s: %v\n", asset.Filename, err)
+				continue
+			}
+
+			if asset.IsValid() {
+				validAssets = append(validAssets, asset)
+			}
+		}
+		return validAssets, nil
+	}
+
+	// For original backup directories, use Photos database
 	assets, err := bp.photosDB.GetAssets(bp.dcimPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get assets from database: %w", err)
@@ -203,7 +285,7 @@ func isValidBackupDir(path string) bool {
 	return hexDirCount > 10
 }
 
-// validateBackupDirectory checks if the directory appears to be a valid iPhone backup
+// validateBackupDirectory checks if the directory appears to be a valid iPhone backup or extracted directory
 func validateBackupDirectory(backupPath string) error {
 	info, err := os.Stat(backupPath)
 	if err != nil {
@@ -214,10 +296,16 @@ func validateBackupDirectory(backupPath string) error {
 		return fmt.Errorf("backup path is not a directory")
 	}
 
-	// Check for key backup files
+	// Check if this is an extracted directory - this is now valid for sync operations
+	extractionMetadataPath := filepath.Join(backupPath, "extraction-metadata.json")
+	if _, err := os.Stat(extractionMetadataPath); err == nil {
+		return nil // Extracted directories are valid
+	}
+
+	// Check for key backup files for original backup directories
 	manifestPath := filepath.Join(backupPath, "Manifest.plist")
 	if _, err := os.Stat(manifestPath); err != nil {
-		return fmt.Errorf("Manifest.plist not found - this doesn't appear to be an iPhone backup")
+		return fmt.Errorf("Manifest.plist not found - this doesn't appear to be an iPhone backup or extracted directory")
 	}
 
 	return nil

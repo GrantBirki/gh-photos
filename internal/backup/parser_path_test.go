@@ -3,6 +3,7 @@ package backup
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -225,6 +226,56 @@ func TestIsValidBackupDir(t *testing.T) {
 			testPath := tt.setupFunc(tempDir)
 			result := isValidBackupDir(testPath)
 			assert.Equal(t, tt.expected, result, tt.description)
+		})
+	}
+}
+
+func TestValidateBackupDirectoryExtracted(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupFunc   func() string
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name: "non-existent_directory",
+			setupFunc: func() string {
+				return "/path/that/does/not/exist"
+			},
+			expectError: true,
+			errorMsg:    "backup path does not exist",
+		},
+		{
+			name: "extracted_directory_should_succeed",
+			setupFunc: func() string {
+				tempDir, _ := os.MkdirTemp("", "extracted-backup-test")
+
+				// Create extraction-metadata.json to simulate extracted directory
+				metadataPath := filepath.Join(tempDir, "extraction-metadata.json")
+				os.WriteFile(metadataPath, []byte(`{"command_metadata": {"completed_at": "2024-01-01T00:00:00Z"}}`), 0644)
+
+				return tempDir
+			},
+			expectError: false,
+			errorMsg:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testPath := tt.setupFunc()
+			if strings.HasPrefix(testPath, "/tmp") || strings.HasPrefix(testPath, os.TempDir()) {
+				defer os.RemoveAll(testPath)
+			}
+
+			err := validateBackupDirectory(testPath)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorMsg)
+			} else {
+				assert.NoError(t, err)
+			}
 		})
 	}
 }
