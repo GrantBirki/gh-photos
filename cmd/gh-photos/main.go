@@ -42,7 +42,8 @@ The tool supports:
 - Parallel uploads with rClone
 - Manifest generation for auditing
 - Comprehensive filtering options`,
-		Version: version.String(),
+		Version:      version.String(),
+		SilenceUsage: true,
 	}
 
 	// Global flags
@@ -72,7 +73,8 @@ Examples:
   gh photos sync /path/to/backup gdrive:photos/backup/path
   gh photos sync /backup/iphone s3:mybucket/photos --dry-run
   gh photos sync /backup gdrive:photos --include-hidden --parallel 8`,
-		Args: cobra.ExactArgs(2),
+		Args:         cobra.ExactArgs(2),
+		SilenceUsage: true,
 		PreRunE: func(cmd *cobra.Command, args []string) error {
 			// Disable colors if requested
 			if noColor, _ := cmd.Flags().GetBool("no-color"); noColor {
@@ -186,7 +188,8 @@ func NewValidateCommand() *cobra.Command {
 		Long: `Validate checks if the specified directory contains a valid iPhone backup
 with the required Photos.sqlite database and DCIM directory structure.
 If no path is provided, checks the current working directory.`,
-		Args: cobra.MaximumNArgs(1),
+		Args:         cobra.MaximumNArgs(1),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var backupPath string
 			if len(args) == 0 {
@@ -212,7 +215,8 @@ func NewListCommand() *cobra.Command {
 		Short: "List assets found in an iPhone backup",
 		Long: `List parses the iPhone backup and displays information about found assets
 including their classification, flags, and file locations.`,
-		Args: cobra.ExactArgs(1),
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runList(args[0])
 		},

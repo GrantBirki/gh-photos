@@ -3,8 +3,10 @@ package photos
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/grantbirki/gh-photos/internal/types"
@@ -65,6 +67,7 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	defer rows.Close()
 
 	var columns []string
+	var columnDetails []string
 	for rows.Next() {
 		var cid int
 		var name, dataType string
@@ -76,7 +79,21 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 			return nil, fmt.Errorf("failed to scan column info: %w", err)
 		}
 		columns = append(columns, name)
+
+		// Create detailed column info for debug logging
+		detail := fmt.Sprintf("%s (%s)", name, dataType)
+		if notNull == 1 {
+			detail += " NOT NULL"
+		}
+		if pk == 1 {
+			detail += " PRIMARY KEY"
+		}
+		columnDetails = append(columnDetails, detail)
 	}
+
+	// Debug log the available columns
+	log.Printf("[DEBUG] Photos.sqlite ZASSET table columns found: %s", strings.Join(columns, ", "))
+	log.Printf("[DEBUG] Photos.sqlite ZASSET column details: %s", strings.Join(columnDetails, " | "))
 
 	if len(columns) == 0 {
 		return nil, fmt.Errorf("ZASSET table has no columns or doesn't exist")
@@ -118,11 +135,16 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	// Fallback to creation date if no modification date column found
 	if info.ModDateColumn == "" {
 		info.ModDateColumn = info.CreationDateColumn
+		log.Printf("[DEBUG] No modification date column found, using creation date column as fallback")
 	}
 
 	if info.CreationDateColumn == "" {
 		return nil, fmt.Errorf("no suitable creation date column found in ZASSET table")
 	}
+
+	// Debug log the selected columns
+	log.Printf("[DEBUG] Selected creation date column: %s", info.CreationDateColumn)
+	log.Printf("[DEBUG] Selected modification date column: %s", info.ModDateColumn)
 
 	return info, nil
 }
@@ -153,6 +175,9 @@ func (d *Database) GetAssets(dcimPath string) ([]*types.Asset, error) {
 		WHERE ZFILENAME IS NOT NULL
 		ORDER BY %s ASC
 	`, schema.CreationDateColumn, schema.ModDateColumn, schema.TableName, schema.CreationDateColumn)
+
+	// Debug log the generated query
+	log.Printf("[DEBUG] Generated Photos.sqlite query: %s", strings.TrimSpace(query))
 
 	rows, err := d.db.Query(query)
 	if err != nil {
