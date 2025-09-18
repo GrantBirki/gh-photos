@@ -287,7 +287,7 @@ Examples:
 	// Extract-specific flags
 	cmd.Flags().StringVarP(&outputPath, "output", "o", "", "output directory (default: ./extracted-backup)")
 	cmd.Flags().BoolVar(&skipExisting, "skip-existing", false, "skip files that already exist in output directory")
-	cmd.Flags().BoolVar(&verify, "verify", false, "verify extracted files by comparing checksums")
+	cmd.Flags().BoolVar(&verify, "verify", false, "verify extracted files by comparing checksums (disabled by default as it significantly slows extraction)")
 	cmd.Flags().BoolVar(&progress, "progress", true, "show extraction progress")
 
 	return cmd

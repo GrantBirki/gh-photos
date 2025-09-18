@@ -215,6 +215,15 @@ gh photos list /backup \
 | `--types` | Filter by asset types | all |
 | `--format` | Output format (table, json) | `table` |
 
+#### Extract Command Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-o, --output` | Output directory for extracted files | `./extracted-backup` |
+| `--skip-existing` | Skip files that already exist in output directory | `false` |
+| `--verify` | Verify extracted files by comparing checksums (significantly slows extraction) | `false` |
+| `--progress` | Show extraction progress during operation | `true` |
+
 ## Verifying Release Binaries 🔏
 
 This project uses [goreleaser](https://goreleaser.com/) to build binaries and [actions/attest-build-provenance](https://github.com/actions/attest-build-provenance) to publish the provenance of the release.

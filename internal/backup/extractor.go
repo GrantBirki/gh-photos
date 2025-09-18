@@ -139,15 +139,26 @@ func (e *Extractor) Extract() (*ExtractSummary, error) {
 			progress := float64(i+1) / float64(len(files)) * 100
 			e.config.Logger.Info("Extracting files",
 				"progress", fmt.Sprintf("%.1f%%", progress),
-				"extracted", fmt.Sprintf("%d/%d", i+1, len(files)))
+				"processed", fmt.Sprintf("%d/%d", i+1, len(files)),
+				"current_domain", file.Domain,
+				"current_file", filepath.Base(file.RelativePath))
 		}
+
+		// Debug log for individual file processing (only visible with --log-level debug)
+		e.config.Logger.Debug("Processing file",
+			"domain", file.Domain,
+			"relative_path", file.RelativePath,
+			"file_id", file.FileID,
+			"index", fmt.Sprintf("%d/%d", i+1, len(files)))
 
 		if err := e.extractFile(&file); err != nil {
 			e.summary.FailedFiles++
 			e.summary.Errors = append(e.summary.Errors,
 				fmt.Sprintf("Failed to extract %s: %v", file.RelativePath, err))
 			e.config.Logger.Warn("Failed to extract file",
+				"domain", file.Domain,
 				"path", file.RelativePath,
+				"file_id", file.FileID,
 				"error", err)
 			continue
 		}
