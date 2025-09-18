@@ -1,34 +1,39 @@
-## Core Principles
+# Core Principles
 
-### I. Library-First, CLI-Friendly
+## I. Library-First, CLI-Friendly
+
 Every feature MUST be implemented as a small, well-documented, independently testable Go package (library) that exposes its functionality through a CLI-facing command. Libraries are the primary unit of design; the CLI is a thin, well-documented adapter that composes libraries into user-facing flows.
 
 - Libraries must have a single responsibility (parsing, categorizing, hashing, rClone orchestration, manifest generation, logging).
 - Libraries must expose a programmatic API suitable for unit tests and for future reuse (e.g., a GUI or API server).
 - CLI commands (Cobra) are glue: parse flags → call library APIs → format output.
 
-### II. Predictable Text I/O & Human+Machine Readable Surface
+## II. Predictable Text I/O & Human+Machine Readable Surface
+
 All CLI behavior must be predictable and scriptable.
 
 - Primary input/output protocol: CLI args + stdin → stdout (human readable and JSON) and errors → stderr.
 - Important outputs (manifests, plans, summaries) MUST be available in JSON for automation and auditing.
 - `--dry-run` must produce a machine-readable plan (JSON) and a human summary.
 
-### III. Test-First (Non-Negotiable)
+## III. Test-First (Non-Negotiable)
+
 TDD is required for all production libraries and critical CLI flows.
 
 - For each new feature or bugfix, write failing unit tests and integration tests before implementing behavior.
 - Unit tests for parsing Photos.sqlite, classification logic, date normalization, filename sanitization, dedupe logic, and rClone interaction wrapper.
 - Integration tests for end-to-end flows should run in CI using small sample backups (sanitized fixtures), exercising `--dry-run`, manifest generation, and error handling.
 
-### IV. Integration & Contract Testing
+## IV. Integration & Contract Testing
+
 Focus integration tests on contracts between modules and external tooling.
 
 - Contracts to test: Photos.sqlite schema parsing → Asset entity, Manifest schema, rClone CLI wrapper contract (commands produced), and filesystem interactions.
 - Add lightweight contract tests for cross-platform path handling (Windows/macOS/Linux), and for rClone command shapes (not provider internals).
 - Any change to a library contract must include automated contract tests and migration notes.
 
-### V. Observability, Simplicity & Backward Compatibility
+## V. Observability, Simplicity & Backward Compatibility
+
 Operate with clear logs, small surface area, and careful change management.
 
 - Structured logging required (JSON or leveled text) with `--log-level` support (`debug`, `info`, `warn`, `error`).
