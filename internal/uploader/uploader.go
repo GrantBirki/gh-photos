@@ -222,18 +222,27 @@ func (u *Uploader) Execute(ctx context.Context) error {
 // filterAssets applies filters to the asset list
 func (u *Uploader) filterAssets(assets []*types.Asset) []*types.Asset {
 	var filtered []*types.Asset
+	var hiddenCount, recentlyDeletedCount, dateFilteredCount, typeFilteredCount int
 
 	for _, asset := range assets {
-		// Apply exclusion rules
+		// Apply exclusion rules and count what's being excluded
 		if asset.ShouldExclude(u.config.IncludeHidden, u.config.IncludeRecentlyDeleted) {
+			if asset.Flags.Hidden && !u.config.IncludeHidden {
+				hiddenCount++
+			}
+			if asset.Flags.RecentlyDeleted && !u.config.IncludeRecentlyDeleted {
+				recentlyDeletedCount++
+			}
 			continue
 		}
 
 		// Apply date filters
 		if u.config.StartDate != nil && asset.CreationDate.Before(*u.config.StartDate) {
+			dateFilteredCount++
 			continue
 		}
 		if u.config.EndDate != nil && asset.CreationDate.After(*u.config.EndDate) {
+			dateFilteredCount++
 			continue
 		}
 
@@ -247,6 +256,7 @@ func (u *Uploader) filterAssets(assets []*types.Asset) []*types.Asset {
 				}
 			}
 			if !typeMatch {
+				typeFilteredCount++
 				continue
 			}
 		}
@@ -255,6 +265,20 @@ func (u *Uploader) filterAssets(assets []*types.Asset) []*types.Asset {
 		asset.TargetPath = asset.GenerateTargetPath(u.config.RootPrefix)
 
 		filtered = append(filtered, asset)
+	}
+
+	// Log exclusion counts at info level for user visibility
+	if hiddenCount > 0 {
+		u.logInfo("Excluding %d hidden assets (use --include-hidden to include them)", hiddenCount)
+	}
+	if recentlyDeletedCount > 0 {
+		u.logInfo("Excluding %d recently deleted assets (use --include-recently-deleted to include them)", recentlyDeletedCount)
+	}
+	if dateFilteredCount > 0 {
+		u.logInfo("Excluding %d assets due to date filters", dateFilteredCount)
+	}
+	if typeFilteredCount > 0 {
+		u.logInfo("Excluding %d assets due to type filters", typeFilteredCount)
 	}
 
 	return filtered
