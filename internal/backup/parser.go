@@ -116,6 +116,13 @@ func resolveBackupPath(inputPath string) (string, error) {
 		return inputPath, nil
 	}
 
+	// If this might be a current working directory check, provide clear error message
+	if absPath, err := filepath.Abs(inputPath); err == nil {
+		if cwd, err := os.Getwd(); err == nil && absPath == cwd {
+			return "", fmt.Errorf("current directory does not contain iPhone backup files (Manifest.db or Manifest.plist not found) - please specify a valid backup directory path")
+		}
+	}
+
 	// Try looking for a "Backup" subdirectory
 	backupDir := filepath.Join(inputPath, "Backup")
 	if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
@@ -136,6 +143,11 @@ func resolveBackupPath(inputPath string) (string, error) {
 			if entry.IsDir() {
 				subDirs = append(subDirs, entry.Name())
 			}
+		}
+
+		// Safety check: if multiple backup directories exist, require explicit selection
+		if len(subDirs) > 1 {
+			return "", fmt.Errorf("multiple backup directories found in %s - please specify the exact backup directory path for safety", backupDir)
 		}
 
 		// If there's exactly one subdirectory, check if it's a backup directory

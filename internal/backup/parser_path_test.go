@@ -86,7 +86,7 @@ func TestResolveBackupPath(t *testing.T) {
 				os.MkdirAll(backup1, 0755)
 				os.MkdirAll(backup2, 0755)
 
-				// Create manifests in both (should not auto-navigate)
+				// Create manifests in both (should error for safety)
 				os.WriteFile(filepath.Join(backup1, "Manifest.plist"), []byte("test"), 0644)
 				os.WriteFile(filepath.Join(backup1, "Status.plist"), []byte("test"), 0644)
 				os.WriteFile(filepath.Join(backup2, "Manifest.plist"), []byte("test"), 0644)
@@ -94,8 +94,8 @@ func TestResolveBackupPath(t *testing.T) {
 
 				return parentDir
 			},
-			expectedResult: "MultipleBackups",
-			description:    "Should return original path if multiple backup directories exist",
+			shouldError: true,
+			description: "Should error when multiple backup directories exist for safety",
 		},
 		{
 			name: "no_backup_directory",

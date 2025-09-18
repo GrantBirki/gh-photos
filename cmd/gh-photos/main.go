@@ -181,13 +181,24 @@ Examples:
 // NewValidateCommand creates the validate subcommand
 func NewValidateCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "validate <backup-path>",
+		Use:   "validate [backup-path]",
 		Short: "Validate an iPhone backup directory",
 		Long: `Validate checks if the specified directory contains a valid iPhone backup
-with the required Photos.sqlite database and DCIM directory structure.`,
-		Args: cobra.ExactArgs(1),
+with the required Photos.sqlite database and DCIM directory structure.
+If no path is provided, checks the current working directory.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runValidate(args[0])
+			var backupPath string
+			if len(args) == 0 {
+				var err error
+				backupPath, err = os.Getwd()
+				if err != nil {
+					return fmt.Errorf("failed to get current working directory: %w", err)
+				}
+			} else {
+				backupPath = args[0]
+			}
+			return runValidate(backupPath)
 		},
 	}
 
