@@ -425,6 +425,10 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 	}
 
 	fmt.Printf("\nExtracted backup is available at: %s\n", outputPath)
+
+	// Display helpful next step suggestion
+	displaySyncSuggestion(outputPath)
+
 	return nil
 }
 
@@ -1055,4 +1059,71 @@ func loadLastCommandConfig(config *uploader.Config, cmd *cobra.Command, args []s
 
 	fmt.Printf("✓ Loaded configuration from last successful run (%s)\n", trail.Metadata.RunID)
 	return nil
+}
+
+// displaySyncSuggestion shows a helpful next step suggestion after extract completion
+func displaySyncSuggestion(extractedPath string) {
+	fmt.Printf("\n🎉 Great! Now that the iPhone backup extraction has completed, the next step for most people is to sync photos to a remote destination.\n")
+
+	// Try to load the last sync command from the audit trail
+	trail, err := audit.LoadLatestManifest()
+	if err == nil && trail.Metadata.Invocation.Remote != "" {
+		// Reconstruct the sync command from the audit trail
+		syncCmd := buildSyncCommand(trail.Metadata.Invocation, extractedPath)
+		fmt.Printf("\n💡 Based on your previous sync command, you might want to run:\n")
+		fmt.Printf("   gh photos %s\n", syncCmd)
+	} else {
+		// Show generic sync command
+		fmt.Printf("\n💡 To sync your photos, you can run:\n")
+		fmt.Printf("   gh photos sync %s <remote-destination>\n", extractedPath)
+		fmt.Printf("\n   Replace <remote-destination> with your preferred destination (e.g., 's3:my-bucket/photos')\n")
+	}
+
+	fmt.Printf("\n   Use 'gh photos sync --help' for more options and examples.\n")
+}
+
+// buildSyncCommand reconstructs a sync command from audit trail invocation data
+func buildSyncCommand(invocation audit.Invocation, sourcePath string) string {
+	parts := []string{"sync", sourcePath, invocation.Remote}
+
+	flags := invocation.Flags
+
+	if flags.IncludeHidden {
+		parts = append(parts, "--include-hidden")
+	}
+	if flags.IncludeRecentlyDeleted {
+		parts = append(parts, "--include-recently-deleted")
+	}
+	if flags.Parallel != 0 && flags.Parallel != 1 {
+		parts = append(parts, fmt.Sprintf("--parallel=%d", flags.Parallel))
+	}
+	if flags.SkipExisting {
+		parts = append(parts, "--skip-existing")
+	}
+	if flags.DryRun {
+		parts = append(parts, "--dry-run")
+	}
+	if flags.LogLevel != "" && flags.LogLevel != "info" {
+		parts = append(parts, fmt.Sprintf("--log-level=%s", flags.LogLevel))
+	}
+	if len(flags.Types) > 0 {
+		parts = append(parts, fmt.Sprintf("--types=%s", strings.Join(flags.Types, ",")))
+	}
+	if flags.StartDate != nil {
+		parts = append(parts, fmt.Sprintf("--start-date=%s", flags.StartDate.Format("2006-01-02")))
+	}
+	if flags.EndDate != nil {
+		parts = append(parts, fmt.Sprintf("--end-date=%s", flags.EndDate.Format("2006-01-02")))
+	}
+	if flags.Root != "" {
+		parts = append(parts, fmt.Sprintf("--root=%s", flags.Root))
+	}
+	if flags.Verify {
+		parts = append(parts, "--verify")
+	}
+	if flags.Checksum {
+		parts = append(parts, "--checksum")
+	}
+
+	return strings.Join(parts, " ")
 }
