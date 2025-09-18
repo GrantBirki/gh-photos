@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/grantbirki/gh-photos/internal/audit"
 	"github.com/grantbirki/gh-photos/internal/backup"
 	"github.com/grantbirki/gh-photos/internal/photos"
 	"github.com/grantbirki/gh-photos/internal/uploader"
@@ -111,6 +112,10 @@ Examples:
 	cmd.Flags().StringVar(&config.SaveManifest, "save-manifest", "", "path to save operation manifest (JSON)")
 	cmd.Flags().StringSliceVar(&config.AssetTypes, "types", nil, "comma-separated asset types to include (photos,videos,screenshots,burst,live_photos)")
 
+	// Audit trail flags
+	cmd.Flags().StringVar(&config.SaveAuditManifest, "save-audit-manifest", "", "path to save an additional copy of the audit trail manifest (JSON)")
+	cmd.Flags().BoolVar(&config.UseLastCommand, "use-last-command", false, "re-run the last successful command from ~/gh-photos/manifest.json")
+
 	// Date filter flags
 	var startDateStr, endDateStr string
 	cmd.Flags().StringVar(&startDateStr, "start-date", "", "start date filter (YYYY-MM-DD)")
@@ -140,6 +145,13 @@ Examples:
 				return fmt.Errorf("invalid end-date format: %w", err)
 			}
 			config.EndDate = &endDate
+		}
+
+		// Handle --use-last-command flag
+		if config.UseLastCommand {
+			if err := loadLastCommandConfig(&config, cmd, args); err != nil {
+				return fmt.Errorf("failed to load last command: %w", err)
+			}
 		}
 
 		// Handle force-overwrite flag (overrides skip-existing)
@@ -424,4 +436,64 @@ func runList(backupPath string) error {
 	// This would use the backup parser to list assets
 	// For now, just validate the backup exists
 	return runValidate(backupPath)
+}
+
+// loadLastCommandConfig loads configuration from the last successful run
+func loadLastCommandConfig(config *uploader.Config, cmd *cobra.Command, args []string) error {
+	// Load the last manifest
+	trail, err := audit.LoadLatestManifest()
+	if err != nil {
+		return fmt.Errorf("could not load last manifest from ~/gh-photos/manifest.json: %w", err)
+	}
+
+	// Override config with values from manifest, but allow command line flags to take precedence
+	if !cmd.Flags().Changed("include-hidden") {
+		config.IncludeHidden = trail.Metadata.Invocation.Flags.IncludeHidden
+	}
+	if !cmd.Flags().Changed("include-recently-deleted") {
+		config.IncludeRecentlyDeleted = trail.Metadata.Invocation.Flags.IncludeRecentlyDeleted
+	}
+	if !cmd.Flags().Changed("parallel") {
+		config.Parallel = trail.Metadata.Invocation.Flags.Parallel
+	}
+	if !cmd.Flags().Changed("skip-existing") {
+		config.SkipExisting = trail.Metadata.Invocation.Flags.SkipExisting
+	}
+	if !cmd.Flags().Changed("dry-run") {
+		config.DryRun = trail.Metadata.Invocation.Flags.DryRun
+	}
+	if !cmd.Flags().Changed("log-level") {
+		config.LogLevel = trail.Metadata.Invocation.Flags.LogLevel
+	}
+	if !cmd.Flags().Changed("types") && len(trail.Metadata.Invocation.Flags.Types) > 0 {
+		config.AssetTypes = trail.Metadata.Invocation.Flags.Types
+	}
+	if !cmd.Flags().Changed("start-date") && trail.Metadata.Invocation.Flags.StartDate != nil {
+		config.StartDate = trail.Metadata.Invocation.Flags.StartDate
+	}
+	if !cmd.Flags().Changed("end-date") && trail.Metadata.Invocation.Flags.EndDate != nil {
+		config.EndDate = trail.Metadata.Invocation.Flags.EndDate
+	}
+	if !cmd.Flags().Changed("root") && trail.Metadata.Invocation.Flags.Root != "" {
+		config.RootPrefix = trail.Metadata.Invocation.Flags.Root
+	}
+	if !cmd.Flags().Changed("verify") {
+		config.Verify = trail.Metadata.Invocation.Flags.Verify
+	}
+	if !cmd.Flags().Changed("checksum") {
+		config.ComputeChecksums = trail.Metadata.Invocation.Flags.Checksum
+	}
+
+	// Override backup path and remote if not provided as arguments
+	if len(args) == 0 {
+		config.BackupPath = trail.Metadata.Device.BackupPath
+		config.Remote = trail.Metadata.Invocation.Remote
+	} else if len(args) == 1 {
+		// Only backup path provided, use remote from manifest
+		config.Remote = trail.Metadata.Invocation.Remote
+	}
+	// If both args provided, use them (already set in main PreRunE)
+
+	fmt.Printf("✓ Loaded configuration from last successful run (%s)\n", trail.Metadata.RunID)
+	return nil
 }

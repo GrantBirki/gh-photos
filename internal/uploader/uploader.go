@@ -10,10 +10,12 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/grantbirki/gh-photos/internal/audit"
 	"github.com/grantbirki/gh-photos/internal/backup"
 	"github.com/grantbirki/gh-photos/internal/manifest"
 	"github.com/grantbirki/gh-photos/internal/rclone"
 	"github.com/grantbirki/gh-photos/internal/types"
+	"github.com/grantbirki/gh-photos/internal/version"
 )
 
 // Config represents the configuration for the uploader
@@ -34,15 +36,19 @@ type Config struct {
 	ComputeChecksums       bool
 	LogLevel               string
 	Verbose                bool
+	SaveAuditManifest      string
+	UseLastCommand         bool
 }
 
 // Uploader orchestrates the photo backup process
 type Uploader struct {
-	config       Config
-	logger       *log.Logger
-	parser       *backup.BackupParser
-	rcloneClient *rclone.Client
-	manifest     *manifest.Manifest
+	config         Config
+	logger         *log.Logger
+	parser         *backup.BackupParser
+	rcloneClient   *rclone.Client
+	manifest       *manifest.Manifest
+	auditTrail     *audit.TrailManager
+	filteredAssets []*types.Asset // Store filtered assets for audit trail
 }
 
 // NewUploader creates a new uploader instance
@@ -86,11 +92,18 @@ func NewUploader(config Config) (*Uploader, error) {
 		config.LogLevel,
 	)
 
+	// Create audit trail manager
+	auditTrail, err := audit.NewTrailManager(version.String())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create audit trail manager: %w", err)
+	}
+
 	return &Uploader{
 		config:       config,
 		logger:       logger,
 		parser:       parser,
 		rcloneClient: rcloneClient,
+		auditTrail:   auditTrail,
 	}, nil
 }
 
@@ -110,6 +123,11 @@ func (u *Uploader) Execute(ctx context.Context) error {
 	u.logInfo("Backup path: %s", u.config.BackupPath)
 	u.logInfo("Remote target: %s", u.config.Remote)
 
+	// Setup audit trail
+	if err := u.setupAuditTrail(); err != nil {
+		return fmt.Errorf("failed to setup audit trail: %w", err)
+	}
+
 	// Parse assets from backup
 	u.logInfo("Parsing assets from backup...")
 	assets, err := u.parser.ParseAssets()
@@ -119,10 +137,10 @@ func (u *Uploader) Execute(ctx context.Context) error {
 	u.logInfo("Found %d total assets", len(assets))
 
 	// Filter assets
-	filteredAssets := u.filterAssets(assets)
-	u.logInfo("After filtering: %d assets to process", len(filteredAssets))
+	u.filteredAssets = u.filterAssets(assets)
+	u.logInfo("After filtering: %d assets to process", len(u.filteredAssets))
 
-	if len(filteredAssets) == 0 {
+	if len(u.filteredAssets) == 0 {
 		u.logInfo("No assets to process. Exiting.")
 		return nil
 	}
@@ -130,7 +148,7 @@ func (u *Uploader) Execute(ctx context.Context) error {
 	// Compute checksums if requested
 	if u.config.ComputeChecksums {
 		u.logInfo("Computing checksums...")
-		if err := u.computeChecksums(filteredAssets); err != nil {
+		if err := u.computeChecksums(u.filteredAssets); err != nil {
 			return fmt.Errorf("failed to compute checksums: %w", err)
 		}
 	}
@@ -149,7 +167,7 @@ func (u *Uploader) Execute(ctx context.Context) error {
 	}
 
 	generator := manifest.NewGenerator(u.config.BackupPath, u.config.Remote, manifestConfig)
-	u.manifest = generator.CreateManifest(filteredAssets, u.config.RootPrefix)
+	u.manifest = generator.CreateManifest(u.filteredAssets, u.config.RootPrefix)
 
 	// Create upload plan
 	u.logInfo("Creating upload plan...")
@@ -214,6 +232,12 @@ func (u *Uploader) Execute(ctx context.Context) error {
 
 	// Print final summary
 	u.manifest.PrintSummary()
+
+	// Finalize audit trail (only on successful completion)
+	if err := u.finalizeAuditTrail(); err != nil {
+		u.logError("Failed to finalize audit trail: %v", err)
+		// Don't return error - the sync was successful
+	}
 
 	u.logInfo("Backup process completed in %v", duration)
 	return nil
@@ -365,5 +389,92 @@ func (u *Uploader) logSuccess(format string, args ...interface{}) {
 	if u.config.Verbose {
 		message := fmt.Sprintf(format, args...)
 		color.Green("[SUCCESS] " + message)
+	}
+}
+
+// setupAuditTrail initializes the audit trail with device and invocation information
+func (u *Uploader) setupAuditTrail() error {
+	// Set device information (we might need to extract this from backup metadata)
+	deviceName, deviceUUID, iosVersion := u.extractDeviceInfo()
+	u.auditTrail.SetDeviceInfo(u.config.BackupPath, deviceName, deviceUUID, iosVersion)
+
+	// Set invocation details
+	flags := audit.InvocationFlags{
+		IncludeHidden:          u.config.IncludeHidden,
+		IncludeRecentlyDeleted: u.config.IncludeRecentlyDeleted,
+		Parallel:               u.config.Parallel,
+		SkipExisting:           u.config.SkipExisting,
+		DryRun:                 u.config.DryRun,
+		LogLevel:               u.config.LogLevel,
+		Types:                  u.config.AssetTypes,
+		StartDate:              u.config.StartDate,
+		EndDate:                u.config.EndDate,
+		Root:                   u.config.RootPrefix,
+		Verify:                 u.config.Verify,
+		Checksum:               u.config.ComputeChecksums,
+	}
+
+	u.auditTrail.SetInvocation(u.config.Remote, flags)
+	return nil
+}
+
+// extractDeviceInfo extracts device information from the backup
+func (u *Uploader) extractDeviceInfo() (*string, *string, *string) {
+	// Try to extract device info from Info.plist if available
+	// For now, return nil values - this can be enhanced later
+	return nil, nil, nil
+}
+
+// finalizeAuditTrail completes the audit trail and saves it
+func (u *Uploader) finalizeAuditTrail() error {
+	// Add all assets from manifest to audit trail
+	for _, entry := range u.manifest.Entries {
+		// Find the original asset to get complete information
+		asset := u.findAssetBySourcePath(entry.SourcePath)
+		if asset != nil {
+			status := u.manifestStatusToAuditStatus(entry.Status)
+			u.auditTrail.AddAsset(asset, entry.TargetPath, status)
+		}
+	}
+
+	// Finalize and save audit trail
+	if err := u.auditTrail.Finalize(); err != nil {
+		return err
+	}
+
+	// Save additional copy if requested
+	if u.config.SaveAuditManifest != "" {
+		if err := u.auditTrail.SaveAdditionalCopy(u.config.SaveAuditManifest); err != nil {
+			u.logError("Failed to save additional audit manifest copy: %v", err)
+		} else {
+			u.logInfo("Saved additional audit manifest to: %s", u.config.SaveAuditManifest)
+		}
+	}
+
+	u.logInfo("✓ Audit trail saved to ~/gh-photos/")
+	return nil
+}
+
+// findAssetBySourcePath finds an asset by its source path (helper for audit trail)
+func (u *Uploader) findAssetBySourcePath(sourcePath string) *types.Asset {
+	for _, asset := range u.filteredAssets {
+		if asset.SourcePath == sourcePath {
+			return asset
+		}
+	}
+	return nil
+}
+
+// manifestStatusToAuditStatus converts manifest status to audit trail status
+func (u *Uploader) manifestStatusToAuditStatus(status manifest.OperationStatus) string {
+	switch status {
+	case manifest.StatusUploaded:
+		return "uploaded"
+	case manifest.StatusSkipped:
+		return "skipped"
+	case manifest.StatusFailed:
+		return "failed"
+	default:
+		return "skipped"
 	}
 }

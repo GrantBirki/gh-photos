@@ -35,6 +35,15 @@ This GitHub CLI extension has been fully implemented according to your specifica
 - Summary statistics and reporting
 - Human-readable output with file size formatting
 
+**✅ Audit Trail System** (`internal/audit/`)
+
+- Comprehensive audit trail with `~/gh-photos/` management
+- Timestamped permanent manifest files (`manifest_YYYY-MM-DDTHH-MM-SSZ.json`)
+- Latest manifest symlink/copy (`manifest.json`)
+- Complete device and invocation metadata capture
+- Per-asset tracking with status, size, checksums, metadata
+- `--use-last-command` functionality for repeatability
+
 **✅ rClone Integration** (`internal/rclone/`)
 
 - Cloud-agnostic upload wrapper
@@ -72,6 +81,8 @@ This GitHub CLI extension has been fully implemented according to your specifica
 - `--save-manifest` - JSON manifest output
 - `--checksum` - SHA256 computation
 - `--root` - Custom root prefix (default: "photos")
+- `--save-audit-manifest` - Additional audit manifest copy location
+- `--use-last-command` - Re-run last successful command from audit history
 
 ### 📁 Upload Structure
 
@@ -134,6 +145,7 @@ The implementation is complete and ready for:
 - ✅ Parallel upload support
 - ✅ Dry-run planning
 - ✅ JSON manifest generation
+- ✅ Audit trail and history system
 - ✅ Cross-platform support
 - ✅ Extensive error handling
 - ✅ Progress tracking and logging
