@@ -1,12 +1,14 @@
 # gh-photos 📸
 
-A gh cli extension for uploading iPhone photos from a backup dump to a remote target using rclone and logical defaults.
-
 [![test](https://github.com/grantbirki/gh-photos/actions/workflows/test.yml/badge.svg)](https://github.com/grantbirki/gh-photos/actions/workflows/test.yml)
 [![build](https://github.com/grantbirki/gh-photos/actions/workflows/build.yml/badge.svg)](https://github.com/grantbirki/gh-photos/actions/workflows/build.yml)
 [![lint](https://github.com/grantbirki/gh-photos/actions/workflows/lint.yml/badge.svg)](https://github.com/grantbirki/gh-photos/actions/workflows/lint.yml)
 [![release](https://github.com/grantbirki/gh-photos/actions/workflows/release.yml/badge.svg)](https://github.com/grantbirki/gh-photos/actions/workflows/release.yml)
 ![slsa-level3](docs/assets/slsa-level3.svg)
+
+A gh cli extension for uploading iPhone photos from a backup dump to a remote target using rclone and logical defaults.
+
+![logo](docs/assets/logo.png)
 
 ## About ⭐
 
