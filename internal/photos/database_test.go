@@ -91,11 +91,15 @@ func TestClassifyAsset(t *testing.T) {
 
 func TestDetectSchema(t *testing.T) {
 	tests := []struct {
-		name             string
-		setupTable       func(*sql.DB) error
-		expectedCreation string
-		expectedMod      string
-		expectedError    bool
+		name                string
+		setupTable          func(*sql.DB) error
+		expectedCreation    string
+		expectedMod         string
+		expectedTrashed     string
+		expectedBurst       string
+		expectedScreenshot  string
+		expectedAdjustments string
+		expectedError       bool
 	}{
 		{
 			name: "iOS 14+ schema with ZCREATIONDATE",
@@ -115,9 +119,13 @@ func TestDetectSchema(t *testing.T) {
 				)`)
 				return err
 			},
-			expectedCreation: "ZCREATIONDATE",
-			expectedMod:      "ZMODIFICATIONDATE",
-			expectedError:    false,
+			expectedCreation:    "ZCREATIONDATE",
+			expectedMod:         "ZMODIFICATIONDATE",
+			expectedTrashed:     "ZTRASHED",
+			expectedBurst:       "ZBURSTIDENTIFIER",
+			expectedScreenshot:  "ZISSCREENSHOT",
+			expectedAdjustments: "ZHASADJUSTMENTS",
+			expectedError:       false,
 		},
 		{
 			name: "iOS 12-13 schema with ZDATECREATED",
@@ -139,6 +147,7 @@ func TestDetectSchema(t *testing.T) {
 			},
 			expectedCreation: "ZDATECREATED",
 			expectedMod:      "ZDATEMODIFIED",
+			expectedTrashed:  "ZTRASHED",
 			expectedError:    false,
 		},
 		{
@@ -161,6 +170,7 @@ func TestDetectSchema(t *testing.T) {
 			},
 			expectedCreation: "ZADDEDDATE",
 			expectedMod:      "ZMODIFIEDDATE",
+			expectedTrashed:  "ZTRASHED",
 			expectedError:    false,
 		},
 		{
@@ -185,6 +195,55 @@ func TestDetectSchema(t *testing.T) {
 			},
 			expectedCreation: "ZCREATIONDATE",
 			expectedMod:      "ZMODIFICATIONDATE",
+			expectedTrashed:  "ZTRASHED",
+			expectedError:    false,
+		},
+		{
+			name: "newer iOS schema with ZTRASHEDSTATE",
+			setupTable: func(db *sql.DB) error {
+				_, err := db.Exec(`CREATE TABLE ZASSET (
+					Z_PK INTEGER PRIMARY KEY,
+					ZFILENAME TEXT,
+					ZDIRECTORY TEXT,
+					ZADDEDDATE REAL,
+					ZMODIFICATIONDATE REAL,
+					ZHIDDEN INTEGER,
+					ZTRASHEDSTATE INTEGER,
+					ZKINDSUBTYPE INTEGER,
+					ZAVALANCHEUUID TEXT,
+					ZISDETECTEDSCREENSHOT INTEGER,
+					ZADJUSTMENTSSTATE INTEGER
+				)`)
+				return err
+			},
+			expectedCreation:    "ZADDEDDATE",
+			expectedMod:         "ZMODIFICATIONDATE",
+			expectedTrashed:     "ZTRASHEDSTATE",
+			expectedBurst:       "ZAVALANCHEUUID",
+			expectedScreenshot:  "ZISDETECTEDSCREENSHOT",
+			expectedAdjustments: "CASE WHEN ZADJUSTMENTSSTATE > 0 THEN 1 ELSE 0 END",
+			expectedError:       false,
+		},
+		{
+			name: "no trashed column uses fallback",
+			setupTable: func(db *sql.DB) error {
+				_, err := db.Exec(`CREATE TABLE ZASSET (
+					Z_PK INTEGER PRIMARY KEY,
+					ZFILENAME TEXT,
+					ZDIRECTORY TEXT,
+					ZADDEDDATE REAL,
+					ZMODIFICATIONDATE REAL,
+					ZHIDDEN INTEGER,
+					ZKINDSUBTYPE INTEGER,
+					ZBURSTIDENTIFIER TEXT,
+					ZISSCREENSHOT INTEGER,
+					ZHASADJUSTMENTS INTEGER
+				)`)
+				return err
+			},
+			expectedCreation: "ZADDEDDATE",
+			expectedMod:      "ZMODIFICATIONDATE",
+			expectedTrashed:  "COALESCE(ZTRASHEDSTATE, 0)",
 			expectedError:    false,
 		},
 		{
@@ -237,6 +296,16 @@ func TestDetectSchema(t *testing.T) {
 			}
 			assert.Equal(t, tt.expectedCreation, schema.CreationDateColumn)
 			assert.Equal(t, tt.expectedMod, schema.ModDateColumn)
+			assert.Equal(t, tt.expectedTrashed, schema.TrashedColumn)
+			if tt.expectedBurst != "" {
+				assert.Equal(t, tt.expectedBurst, schema.BurstColumn)
+			}
+			if tt.expectedScreenshot != "" {
+				assert.Equal(t, tt.expectedScreenshot, schema.ScreenshotColumn)
+			}
+			if tt.expectedAdjustments != "" {
+				assert.Equal(t, tt.expectedAdjustments, schema.AdjustmentsColumn)
+			}
 			assert.Equal(t, "ZASSET", schema.TableName)
 		})
 	}

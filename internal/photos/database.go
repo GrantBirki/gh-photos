@@ -50,6 +50,10 @@ func (d *Database) Close() error {
 type SchemaInfo struct {
 	CreationDateColumn string
 	ModDateColumn      string
+	TrashedColumn      string
+	BurstColumn        string
+	ScreenshotColumn   string
+	AdjustmentsColumn  string
 	TableName          string
 }
 
@@ -132,10 +136,77 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 		}
 	}
 
+	// Determine trashed column
+	// Priority order: ZTRASHED (older iOS) > ZTRASHEDSTATE (newer iOS)
+	for _, col := range columns {
+		switch col {
+		case "ZTRASHED":
+			info.TrashedColumn = "ZTRASHED"
+		case "ZTRASHEDSTATE":
+			if info.TrashedColumn == "" {
+				info.TrashedColumn = "ZTRASHEDSTATE"
+			}
+		}
+	}
+
 	// Fallback to creation date if no modification date column found
 	if info.ModDateColumn == "" {
 		info.ModDateColumn = info.CreationDateColumn
 		log.Printf("[DEBUG] No modification date column found, using creation date column as fallback")
+	}
+
+	// Set default for trashed column if none found
+	if info.TrashedColumn == "" {
+		info.TrashedColumn = "COALESCE(ZTRASHEDSTATE, 0)" // Fallback with default value
+		log.Printf("[DEBUG] No trashed column found, using fallback with default value")
+	}
+
+	// Determine burst identifier column
+	for _, col := range columns {
+		switch col {
+		case "ZBURSTIDENTIFIER":
+			info.BurstColumn = "ZBURSTIDENTIFIER"
+		case "ZAVALANCHEUUID":
+			if info.BurstColumn == "" {
+				info.BurstColumn = "ZAVALANCHEUUID" // Alternative name in some iOS versions
+			}
+		}
+	}
+	if info.BurstColumn == "" {
+		info.BurstColumn = "NULL" // Fallback to NULL if not found
+		log.Printf("[DEBUG] No burst identifier column found, using NULL fallback")
+	}
+
+	// Determine screenshot column
+	for _, col := range columns {
+		switch col {
+		case "ZISSCREENSHOT":
+			info.ScreenshotColumn = "ZISSCREENSHOT"
+		case "ZISDETECTEDSCREENSHOT":
+			if info.ScreenshotColumn == "" {
+				info.ScreenshotColumn = "ZISDETECTEDSCREENSHOT" // Newer iOS versions
+			}
+		}
+	}
+	if info.ScreenshotColumn == "" {
+		info.ScreenshotColumn = "0" // Fallback to 0 (not a screenshot) if not found
+		log.Printf("[DEBUG] No screenshot column found, using 0 fallback")
+	}
+
+	// Determine adjustments column
+	for _, col := range columns {
+		switch col {
+		case "ZHASADJUSTMENTS":
+			info.AdjustmentsColumn = "ZHASADJUSTMENTS"
+		case "ZADJUSTMENTSSTATE":
+			if info.AdjustmentsColumn == "" {
+				info.AdjustmentsColumn = "CASE WHEN ZADJUSTMENTSSTATE > 0 THEN 1 ELSE 0 END" // Convert state to boolean
+			}
+		}
+	}
+	if info.AdjustmentsColumn == "" {
+		info.AdjustmentsColumn = "0" // Fallback to 0 (no adjustments) if not found
+		log.Printf("[DEBUG] No adjustments column found, using 0 fallback")
 	}
 
 	if info.CreationDateColumn == "" {
@@ -145,6 +216,10 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	// Debug log the selected columns
 	log.Printf("[DEBUG] Selected creation date column: %s", info.CreationDateColumn)
 	log.Printf("[DEBUG] Selected modification date column: %s", info.ModDateColumn)
+	log.Printf("[DEBUG] Selected trashed column: %s", info.TrashedColumn)
+	log.Printf("[DEBUG] Selected burst column: %s", info.BurstColumn)
+	log.Printf("[DEBUG] Selected screenshot column: %s", info.ScreenshotColumn)
+	log.Printf("[DEBUG] Selected adjustments column: %s", info.AdjustmentsColumn)
 
 	return info, nil
 }
@@ -166,15 +241,15 @@ func (d *Database) GetAssets(dcimPath string) ([]*types.Asset, error) {
 			%s,
 			%s,
 			ZHIDDEN,
-			ZTRASHED,
+			%s,
 			ZKINDSUBTYPE,
-			ZBURSTIDENTIFIER,
-			ZISSCREENSHOT,
-			ZHASADJUSTMENTS
+			%s,
+			%s,
+			%s
 		FROM %s 
 		WHERE ZFILENAME IS NOT NULL
 		ORDER BY %s ASC
-	`, schema.CreationDateColumn, schema.ModDateColumn, schema.TableName, schema.CreationDateColumn)
+	`, schema.CreationDateColumn, schema.ModDateColumn, schema.TrashedColumn, schema.BurstColumn, schema.ScreenshotColumn, schema.AdjustmentsColumn, schema.TableName, schema.CreationDateColumn)
 
 	// Debug log the generated query
 	log.Printf("[DEBUG] Generated Photos.sqlite query: %s", strings.TrimSpace(query))
