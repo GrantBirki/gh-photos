@@ -2,10 +2,12 @@ package photos
 
 import (
 	"database/sql"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/grantbirki/gh-photos/internal/logger"
 	"github.com/grantbirki/gh-photos/internal/types"
 	"github.com/stretchr/testify/assert"
 	_ "modernc.org/sqlite"
@@ -280,8 +282,17 @@ func TestDetectSchema(t *testing.T) {
 				return
 			}
 
+			// Create test logger
+			testLogger := logger.New(logger.Config{
+				Level:  logger.LevelDebug,
+				Output: io.Discard, // Don't output during tests
+			})
+
 			// Create Database instance
-			photosDB := &Database{db: db}
+			photosDB := &Database{
+				db:     db,
+				logger: testLogger,
+			}
 
 			// Test schema detection
 			schema, err := photosDB.detectSchema()
@@ -351,8 +362,17 @@ func TestGetAssets_SchemaAdaptive(t *testing.T) {
 		return
 	}
 
+	// Create test logger
+	testLogger := logger.New(logger.Config{
+		Level:  logger.LevelDebug,
+		Output: io.Discard, // Don't output during tests
+	})
+
 	// Create Database instance and test GetAssets
-	photosDB := &Database{db: db}
+	photosDB := &Database{
+		db:     db,
+		logger: testLogger,
+	}
 
 	// This should work without the ZCREATIONDATE error
 	assets, err := photosDB.GetAssets("/fake/dcim/path")

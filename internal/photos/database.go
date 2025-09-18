@@ -3,24 +3,25 @@ package photos
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/grantbirki/gh-photos/internal/logger"
 	"github.com/grantbirki/gh-photos/internal/types"
 	_ "modernc.org/sqlite"
 )
 
 // Database represents a connection to the Photos.sqlite database
 type Database struct {
-	db   *sql.DB
-	path string
+	db     *sql.DB
+	path   string
+	logger *logger.Logger
 }
 
 // NewDatabase creates a new Photos database connection
-func NewDatabase(dbPath string) (*Database, error) {
+func NewDatabase(dbPath string, logger *logger.Logger) (*Database, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database %s: %w", dbPath, err)
@@ -28,14 +29,16 @@ func NewDatabase(dbPath string) (*Database, error) {
 
 	// Test the connection
 	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to ping database %s: %w", dbPath, err)
+		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
-	return &Database{
-		db:   db,
-		path: dbPath,
-	}, nil
+	database := &Database{
+		db:     db,
+		path:   dbPath,
+		logger: logger,
+	}
+
+	return database, nil
 }
 
 // Close closes the database connection
@@ -96,8 +99,8 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	}
 
 	// Debug log the available columns
-	log.Printf("[DEBUG] Photos.sqlite ZASSET table columns found: %s", strings.Join(columns, ", "))
-	log.Printf("[DEBUG] Photos.sqlite ZASSET column details: %s", strings.Join(columnDetails, " | "))
+	d.logger.Debug("Photos.sqlite ZASSET table columns found", "columns", strings.Join(columns, ", "))
+	d.logger.Debug("Photos.sqlite ZASSET column details", "details", strings.Join(columnDetails, " | "))
 
 	if len(columns) == 0 {
 		return nil, fmt.Errorf("ZASSET table has no columns or doesn't exist")
@@ -152,13 +155,13 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	// Fallback to creation date if no modification date column found
 	if info.ModDateColumn == "" {
 		info.ModDateColumn = info.CreationDateColumn
-		log.Printf("[DEBUG] No modification date column found, using creation date column as fallback")
+		d.logger.Debug("No modification date column found, using creation date column as fallback")
 	}
 
 	// Set default for trashed column if none found
 	if info.TrashedColumn == "" {
 		info.TrashedColumn = "COALESCE(ZTRASHEDSTATE, 0)" // Fallback with default value
-		log.Printf("[DEBUG] No trashed column found, using fallback with default value")
+		d.logger.Debug("No trashed column found, using fallback with default value")
 	}
 
 	// Determine burst identifier column
@@ -174,7 +177,7 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	}
 	if info.BurstColumn == "" {
 		info.BurstColumn = "NULL" // Fallback to NULL if not found
-		log.Printf("[DEBUG] No burst identifier column found, using NULL fallback")
+		d.logger.Debug("No burst identifier column found, using NULL fallback")
 	}
 
 	// Determine screenshot column
@@ -190,7 +193,7 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	}
 	if info.ScreenshotColumn == "" {
 		info.ScreenshotColumn = "0" // Fallback to 0 (not a screenshot) if not found
-		log.Printf("[DEBUG] No screenshot column found, using 0 fallback")
+		d.logger.Debug("No screenshot column found, using 0 fallback")
 	}
 
 	// Determine adjustments column
@@ -206,7 +209,7 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	}
 	if info.AdjustmentsColumn == "" {
 		info.AdjustmentsColumn = "0" // Fallback to 0 (no adjustments) if not found
-		log.Printf("[DEBUG] No adjustments column found, using 0 fallback")
+		d.logger.Debug("No adjustments column found, using 0 fallback")
 	}
 
 	if info.CreationDateColumn == "" {
@@ -214,12 +217,12 @@ func (d *Database) detectSchema() (*SchemaInfo, error) {
 	}
 
 	// Debug log the selected columns
-	log.Printf("[DEBUG] Selected creation date column: %s", info.CreationDateColumn)
-	log.Printf("[DEBUG] Selected modification date column: %s", info.ModDateColumn)
-	log.Printf("[DEBUG] Selected trashed column: %s", info.TrashedColumn)
-	log.Printf("[DEBUG] Selected burst column: %s", info.BurstColumn)
-	log.Printf("[DEBUG] Selected screenshot column: %s", info.ScreenshotColumn)
-	log.Printf("[DEBUG] Selected adjustments column: %s", info.AdjustmentsColumn)
+	d.logger.Debug("Selected creation date column", "column", info.CreationDateColumn)
+	d.logger.Debug("Selected modification date column", "column", info.ModDateColumn)
+	d.logger.Debug("Selected trashed column", "column", info.TrashedColumn)
+	d.logger.Debug("Selected burst column", "column", info.BurstColumn)
+	d.logger.Debug("Selected screenshot column", "column", info.ScreenshotColumn)
+	d.logger.Debug("Selected adjustments column", "column", info.AdjustmentsColumn)
 
 	return info, nil
 }
@@ -252,7 +255,7 @@ func (d *Database) GetAssets(dcimPath string) ([]*types.Asset, error) {
 	`, schema.CreationDateColumn, schema.ModDateColumn, schema.TrashedColumn, schema.BurstColumn, schema.ScreenshotColumn, schema.AdjustmentsColumn, schema.TableName, schema.CreationDateColumn)
 
 	// Debug log the generated query
-	log.Printf("[DEBUG] Generated Photos.sqlite query: %s", strings.TrimSpace(query))
+	d.logger.Debug("Generated Photos.sqlite query", "query", strings.TrimSpace(query))
 
 	rows, err := d.db.Query(query)
 	if err != nil {

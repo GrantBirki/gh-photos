@@ -3,7 +3,6 @@ package uploader
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/grantbirki/gh-photos/internal/audit"
 	"github.com/grantbirki/gh-photos/internal/backup"
+	"github.com/grantbirki/gh-photos/internal/logger"
 	"github.com/grantbirki/gh-photos/internal/manifest"
 	"github.com/grantbirki/gh-photos/internal/rclone"
 	"github.com/grantbirki/gh-photos/internal/types"
@@ -43,7 +43,7 @@ type Config struct {
 // Uploader orchestrates the photo backup process
 type Uploader struct {
 	config         Config
-	logger         *log.Logger
+	logger         *logger.Logger
 	parser         *backup.BackupParser
 	rcloneClient   *rclone.Client
 	manifest       *manifest.Manifest
@@ -54,15 +54,16 @@ type Uploader struct {
 // NewUploader creates a new uploader instance
 func NewUploader(config Config) (*Uploader, error) {
 	// Setup logger
-	logger := log.New(os.Stdout, "", log.LstdFlags)
-
-	// Set appropriate output for debug messages
+	logLevel := logger.LevelInfo
 	if config.LogLevel == "debug" || config.Verbose {
-		logger.SetOutput(os.Stdout)
-	} else {
-		// For non-debug levels, we'll filter debug messages in the rclone client
-		logger.SetOutput(os.Stdout)
+		logLevel = logger.LevelDebug
 	}
+
+	loggerConfig := logger.Config{
+		Level:  logLevel,
+		Output: os.Stdout,
+	}
+	logger := logger.New(loggerConfig)
 
 	// Validate rclone installation
 	if !config.DryRun {
@@ -76,7 +77,7 @@ func NewUploader(config Config) (*Uploader, error) {
 	}
 
 	// Create backup parser
-	parser, err := backup.NewBackupParser(config.BackupPath)
+	parser, err := backup.NewBackupParser(config.BackupPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create backup parser: %w", err)
 	}
@@ -375,14 +376,14 @@ func (u *Uploader) verifyUploads(ctx context.Context) error {
 func (u *Uploader) logInfo(format string, args ...interface{}) {
 	if u.config.Verbose || u.config.LogLevel == "debug" || u.config.LogLevel == "info" {
 		message := fmt.Sprintf(format, args...)
-		u.logger.Printf("[INFO] %s", message)
+		u.logger.Info(message)
 	}
 }
 
 func (u *Uploader) logError(format string, args ...interface{}) {
 	message := fmt.Sprintf(format, args...)
 	color.Red("[ERROR] " + message)
-	u.logger.Printf("[ERROR] %s", message)
+	u.logger.Error(message)
 }
 
 func (u *Uploader) logSuccess(format string, args ...interface{}) {

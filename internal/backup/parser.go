@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/grantbirki/gh-photos/internal/logger"
 	"github.com/grantbirki/gh-photos/internal/photos"
 	"github.com/grantbirki/gh-photos/internal/types"
 )
@@ -19,7 +20,7 @@ type BackupParser struct {
 }
 
 // NewBackupParser creates a new backup parser for the given backup directory
-func NewBackupParser(backupPath string) (*BackupParser, error) {
+func NewBackupParser(backupPath string, logger *logger.Logger) (*BackupParser, error) {
 	// Resolve the backup path using smart directory walking
 	resolvedPath, err := resolveBackupPath(backupPath)
 	if err != nil {
@@ -38,7 +39,7 @@ func NewBackupParser(backupPath string) (*BackupParser, error) {
 	}
 
 	// Open the Photos database
-	photosDB, err := photos.NewDatabase(photosDBPath)
+	photosDB, err := photos.NewDatabase(photosDBPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Photos database: %w", err)
 	}
