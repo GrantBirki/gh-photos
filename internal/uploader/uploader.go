@@ -240,6 +240,8 @@ func (u *Uploader) Execute(ctx context.Context) error {
 		// Don't return error - the sync was successful
 	}
 
+	// TODO: Add metadata generation hook here in the future
+
 	u.logInfo("Backup process completed in %v", duration)
 	return nil
 }

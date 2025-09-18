@@ -224,6 +224,57 @@ gh photos list /backup \
 | `--verify` | Verify extracted files by comparing checksums (significantly slows extraction) | `false` |
 | `--progress` | Show extraction progress during operation | `true` |
 
+## Command Metadata 📊
+
+Both `sync` and `extract` commands automatically generate comprehensive metadata about the operation, including:
+
+### **Metadata Includes:**
+
+- ⏰ **UTC timestamp** of command completion (RFC3339 format)
+- 💻 **System information**: OS, architecture, and version of the computer running the CLI
+- 📱 **iOS backup details**: Device name, model, iOS version, backup date, and backup type
+- 🖼️ **Asset type counts**: Photos, videos, Live Photos, screenshots, and burst photos detected
+
+### **Metadata Output:**
+
+- **Console Display**: Metadata summary is printed after successful operations
+- **JSON Storage**: For `sync` commands, metadata is saved to the `--save-manifest` file
+- **Extract Files**: For `extract` commands, metadata is saved to `extraction-metadata.json` in the output directory
+
+### **Example Metadata Output:**
+
+```text
+📊 Command Metadata Summary:
+  Completed at: 2024-01-15T10:30:45Z
+  CLI version: v0.0.8-dev
+  System: darwin arm64 (macOS 15.1.1)
+
+📱 iOS Backup Info:
+  Backup path: /Users/username/Library/Application Support/MobileSync/Backup/12345...
+  Backup type: hashed
+  Encrypted: false
+  Device name: John's iPhone
+  Device model: iPhone14,2
+  iOS version: 17.6
+  Backup date: 2024-01-14T22:15:00Z
+  Total files: 50670
+
+🖼️  Asset Type Counts:
+  Photos: 2847
+  Videos: 156
+  Live Photos: 23
+  Screenshots: 89
+  Burst: 12
+  Total: 3127
+```
+
+This metadata helps with:
+
+- **Operation auditing** and record-keeping
+- **System compatibility** verification
+- **Backup source** identification and validation
+- **Asset inventory** tracking across different operations
+
 ## Verifying Release Binaries 🔏
 
 This project uses [goreleaser](https://goreleaser.com/) to build binaries and [actions/attest-build-provenance](https://github.com/actions/attest-build-provenance) to publish the provenance of the release.

@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -15,10 +17,51 @@ import (
 	"github.com/grantbirki/gh-photos/internal/backup"
 	"github.com/grantbirki/gh-photos/internal/logger"
 	"github.com/grantbirki/gh-photos/internal/photos"
+	"github.com/grantbirki/gh-photos/internal/types"
 	"github.com/grantbirki/gh-photos/internal/uploader"
 	"github.com/grantbirki/gh-photos/internal/version"
 	"github.com/spf13/cobra"
 )
+
+// CommandMetadata contains comprehensive metadata about command execution
+type CommandMetadata struct {
+	CompletedAt time.Time     `json:"completed_at"`
+	CLIVersion  string        `json:"cli_version"`
+	System      SystemInfo    `json:"system"`
+	IOSBackup   IOSBackupInfo `json:"ios_backup"`
+	AssetCounts AssetCounts   `json:"asset_counts"`
+}
+
+// SystemInfo contains information about the system running the CLI
+type SystemInfo struct {
+	OS       string `json:"os"`
+	Arch     string `json:"arch"`
+	Version  string `json:"version,omitempty"`
+	Hostname string `json:"hostname,omitempty"`
+}
+
+// IOSBackupInfo contains information about the iOS backup
+type IOSBackupInfo struct {
+	BackupPath  string  `json:"backup_path"`
+	DeviceName  *string `json:"device_name,omitempty"`
+	DeviceModel *string `json:"device_model,omitempty"`
+	DeviceUUID  *string `json:"device_uuid,omitempty"`
+	IOSVersion  *string `json:"ios_version,omitempty"`
+	BackupDate  *string `json:"backup_date,omitempty"`
+	BackupType  string  `json:"backup_type"` // "hashed" or "directory"
+	IsEncrypted bool    `json:"is_encrypted"`
+	TotalFiles  *int64  `json:"total_files,omitempty"`
+}
+
+// AssetCounts contains counts of different asset types
+type AssetCounts struct {
+	Photos      int `json:"photos"`
+	Videos      int `json:"videos"`
+	LivePhotos  int `json:"live_photos"`
+	Screenshots int `json:"screenshots"`
+	Burst       int `json:"burst"`
+	Total       int `json:"total"`
+}
 
 func main() {
 	if err := NewRootCommand().Execute(); err != nil {
@@ -360,8 +403,363 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 	fmt.Printf("  Extracted size: %s\n", formatBytes(summary.ExtractedSize))
 	fmt.Printf("  Duration: %v\n", summary.Duration.Round(time.Second))
 
+	// Generate and display metadata
+	metadata := newCommandMetadata()
+	if err := metadata.setIOSBackupInfo(backupPath); err != nil {
+		fmt.Printf("Warning: Could not collect iOS backup metadata: %v\n", err)
+	}
+
+	// Set backup file count
+	totalFiles := int64(summary.TotalFiles)
+	metadata.IOSBackup.TotalFiles = &totalFiles
+
+	// Display metadata summary
+	metadata.printSummary()
+
+	// Save metadata to a manifest file in the output directory
+	manifestPath := filepath.Join(outputPath, "extraction-metadata.json")
+	if err := metadata.saveToManifest(manifestPath); err != nil {
+		fmt.Printf("Warning: Could not save metadata to %s: %v\n", manifestPath, err)
+	} else {
+		fmt.Printf("\n💾 Metadata saved to: %s\n", manifestPath)
+	}
+
 	fmt.Printf("\nExtracted backup is available at: %s\n", outputPath)
 	return nil
+}
+
+// newCommandMetadata creates a new CommandMetadata instance
+func newCommandMetadata() *CommandMetadata {
+	hostname, _ := os.Hostname() // Ignore error, optional field
+
+	return &CommandMetadata{
+		CompletedAt: time.Now().UTC(),
+		CLIVersion:  version.String(),
+		System: SystemInfo{
+			OS:       runtime.GOOS,
+			Arch:     runtime.GOARCH,
+			Version:  getOSVersion(),
+			Hostname: hostname,
+		},
+		IOSBackup:   IOSBackupInfo{},
+		AssetCounts: AssetCounts{},
+	}
+}
+
+// setIOSBackupInfo populates iOS backup information
+func (m *CommandMetadata) setIOSBackupInfo(backupPath string) error {
+	m.IOSBackup.BackupPath = backupPath
+
+	// Determine backup type (hashed vs directory structure)
+	manifestDBPath := filepath.Join(backupPath, "Manifest.db")
+	if _, err := os.Stat(manifestDBPath); err == nil {
+		m.IOSBackup.BackupType = "hashed"
+	} else {
+		m.IOSBackup.BackupType = "directory"
+	}
+
+	// Extract device information from backup files
+	if err := m.extractDeviceInfo(backupPath); err != nil {
+		// Log warning but don't fail - device info is optional
+		fmt.Printf("Warning: Could not extract device info: %v\n", err)
+	}
+
+	return nil
+}
+
+// setAssetCounts populates asset type counts
+func (m *CommandMetadata) setAssetCounts(assets []*types.Asset) {
+	counts := AssetCounts{}
+
+	for _, asset := range assets {
+		counts.Total++
+		switch asset.Type {
+		case types.AssetTypePhoto:
+			counts.Photos++
+		case types.AssetTypeVideo:
+			counts.Videos++
+		case types.AssetTypeLivePhoto:
+			counts.LivePhotos++
+		case types.AssetTypeScreenshot:
+			counts.Screenshots++
+		case types.AssetTypeBurst:
+			counts.Burst++
+		}
+	}
+
+	m.AssetCounts = counts
+}
+
+// printSummary displays metadata summary to console
+func (m *CommandMetadata) printSummary() {
+	fmt.Printf("\n📊 Command Metadata Summary:\n")
+	fmt.Printf("  Completed at: %s\n", m.CompletedAt.Format(time.RFC3339))
+	fmt.Printf("  CLI version: %s\n", m.CLIVersion)
+	fmt.Printf("  System: %s %s", m.System.OS, m.System.Arch)
+	if m.System.Version != "" {
+		fmt.Printf(" (%s)", m.System.Version)
+	}
+	fmt.Println()
+
+	if m.IOSBackup.BackupPath != "" {
+		fmt.Printf("\n📱 iOS Backup Info:\n")
+		fmt.Printf("  Backup path: %s\n", m.IOSBackup.BackupPath)
+		fmt.Printf("  Backup type: %s\n", m.IOSBackup.BackupType)
+		fmt.Printf("  Encrypted: %t\n", m.IOSBackup.IsEncrypted)
+
+		if m.IOSBackup.DeviceName != nil {
+			fmt.Printf("  Device name: %s\n", *m.IOSBackup.DeviceName)
+		}
+		if m.IOSBackup.DeviceModel != nil {
+			fmt.Printf("  Device model: %s\n", *m.IOSBackup.DeviceModel)
+		}
+		if m.IOSBackup.IOSVersion != nil {
+			fmt.Printf("  iOS version: %s\n", *m.IOSBackup.IOSVersion)
+		}
+		if m.IOSBackup.BackupDate != nil {
+			fmt.Printf("  Backup date: %s\n", *m.IOSBackup.BackupDate)
+		}
+		if m.IOSBackup.TotalFiles != nil {
+			fmt.Printf("  Total files: %d\n", *m.IOSBackup.TotalFiles)
+		}
+	}
+
+	if m.AssetCounts.Total > 0 {
+		fmt.Printf("\n🖼️  Asset Type Counts:\n")
+		fmt.Printf("  Photos: %d\n", m.AssetCounts.Photos)
+		fmt.Printf("  Videos: %d\n", m.AssetCounts.Videos)
+		fmt.Printf("  Live Photos: %d\n", m.AssetCounts.LivePhotos)
+		fmt.Printf("  Screenshots: %d\n", m.AssetCounts.Screenshots)
+		fmt.Printf("  Burst: %d\n", m.AssetCounts.Burst)
+		fmt.Printf("  Total: %d\n", m.AssetCounts.Total)
+	}
+}
+
+// saveToManifest adds metadata to manifest JSON file
+func (m *CommandMetadata) saveToManifest(manifestPath string) error {
+	// Check if manifest file exists
+	var manifestData map[string]interface{}
+
+	if _, err := os.Stat(manifestPath); err == nil {
+		// Read existing manifest
+		data, err := os.ReadFile(manifestPath)
+		if err != nil {
+			return fmt.Errorf("failed to read existing manifest: %w", err)
+		}
+
+		if err := json.Unmarshal(data, &manifestData); err != nil {
+			// If JSON is invalid, start fresh
+			manifestData = make(map[string]interface{})
+		}
+	} else {
+		// Create new manifest
+		manifestData = make(map[string]interface{})
+	}
+
+	// Add metadata section
+	manifestData["command_metadata"] = m
+
+	// Write updated manifest
+	updatedData, err := json.MarshalIndent(manifestData, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+
+	if err := os.WriteFile(manifestPath, updatedData, 0644); err != nil {
+		return fmt.Errorf("failed to write manifest: %w", err)
+	}
+
+	return nil
+}
+
+// extractDeviceInfo extracts device information from backup files
+func (m *CommandMetadata) extractDeviceInfo(backupPath string) error {
+	// Try to read Info.plist first (contains most detailed info)
+	infoPlistPath := filepath.Join(backupPath, "Info.plist")
+	if info, err := readPlistInfo(infoPlistPath); err == nil {
+		m.IOSBackup.DeviceName = info.DeviceName
+		m.IOSBackup.DeviceModel = info.ProductType
+		m.IOSBackup.IOSVersion = info.ProductVersion
+		m.IOSBackup.BackupDate = info.Date
+		m.IOSBackup.DeviceUUID = info.UniqueIdentifier
+		return nil
+	}
+
+	// Fallback to Manifest.plist (less detailed but usually present)
+	manifestPlistPath := filepath.Join(backupPath, "Manifest.plist")
+	if manifest, err := readManifestPlist(manifestPlistPath); err == nil {
+		m.IOSBackup.IsEncrypted = manifest.IsEncrypted
+		return nil
+	}
+
+	return fmt.Errorf("could not find backup info files")
+}
+
+// PlistInfo represents the structure of Info.plist
+type PlistInfo struct {
+	DeviceName       *string `plist:"Device Name" json:"device_name,omitempty"`
+	ProductType      *string `plist:"Product Type" json:"product_type,omitempty"`
+	ProductVersion   *string `plist:"Product Version" json:"product_version,omitempty"`
+	Date             *string `plist:"Date" json:"date,omitempty"`
+	UniqueIdentifier *string `plist:"Unique Identifier" json:"unique_identifier,omitempty"`
+}
+
+// ManifestPlist represents key fields from Manifest.plist
+type ManifestPlist struct {
+	IsEncrypted bool `plist:"IsEncrypted" json:"is_encrypted"`
+}
+
+// readPlistInfo reads device info from Info.plist
+func readPlistInfo(path string) (*PlistInfo, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// Simple plist parsing for key-value pairs
+	info := &PlistInfo{}
+	content := string(data)
+
+	// Extract device name
+	if name := extractPlistValue(content, "Device Name"); name != "" {
+		info.DeviceName = &name
+	}
+
+	// Extract product type (model)
+	if model := extractPlistValue(content, "Product Type"); model != "" {
+		info.ProductType = &model
+	}
+
+	// Extract iOS version
+	if version := extractPlistValue(content, "Product Version"); version != "" {
+		info.ProductVersion = &version
+	}
+
+	// Extract backup date
+	if date := extractPlistValue(content, "Date"); date != "" {
+		info.Date = &date
+	}
+
+	// Extract device UUID
+	if uuid := extractPlistValue(content, "Unique Identifier"); uuid != "" {
+		info.UniqueIdentifier = &uuid
+	}
+
+	return info, nil
+}
+
+// readManifestPlist reads encryption info from Manifest.plist
+func readManifestPlist(path string) (*ManifestPlist, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	manifest := &ManifestPlist{}
+	content := string(data)
+
+	// Check for encryption marker
+	manifest.IsEncrypted = strings.Contains(content, "<key>IsEncrypted</key>") &&
+		strings.Contains(content, "<true/>")
+
+	return manifest, nil
+}
+
+// extractPlistValue extracts a string value from plist content
+func extractPlistValue(content, key string) string {
+	keyPattern := fmt.Sprintf("<key>%s</key>", key)
+	keyIndex := strings.Index(content, keyPattern)
+	if keyIndex == -1 {
+		return ""
+	}
+
+	// Look for the next <string> tag after the key
+	searchStart := keyIndex + len(keyPattern)
+	stringStart := strings.Index(content[searchStart:], "<string>")
+	if stringStart == -1 {
+		return ""
+	}
+	stringStart += searchStart + 8 // Length of "<string>"
+
+	stringEnd := strings.Index(content[stringStart:], "</string>")
+	if stringEnd == -1 {
+		return ""
+	}
+
+	return content[stringStart : stringStart+stringEnd]
+}
+
+// getOSVersion returns the operating system version
+func getOSVersion() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return getMacOSVersion()
+	case "windows":
+		return getWindowsVersion()
+	case "linux":
+		return getLinuxVersion()
+	default:
+		return ""
+	}
+}
+
+// getMacOSVersion returns macOS version
+func getMacOSVersion() string {
+	// Try to read from system_profiler
+	if data, err := os.ReadFile("/System/Library/CoreServices/SystemVersion.plist"); err == nil {
+		content := string(data)
+		if version := extractPlistValue(content, "ProductVersion"); version != "" {
+			return fmt.Sprintf("macOS %s", version)
+		}
+	}
+	return "macOS"
+}
+
+// getWindowsVersion returns Windows version
+func getWindowsVersion() string {
+	// This is a simplified approach - in production you might want to use
+	// Windows API calls for more accurate version detection
+	return "Windows"
+}
+
+// getLinuxVersion returns Linux distribution info
+func getLinuxVersion() string {
+	if data, err := os.ReadFile("/etc/os-release"); err == nil {
+		content := string(data)
+		lines := strings.Split(content, "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "PRETTY_NAME=") {
+				// Remove quotes and PRETTY_NAME= prefix
+				version := strings.Trim(strings.TrimPrefix(line, "PRETTY_NAME="), `"`)
+				return version
+			}
+		}
+	}
+	return "Linux"
+}
+
+// getAssetsFromBackup extracts assets from backup for metadata counting
+func getAssetsFromBackup(backupPath string) []*types.Asset {
+	// Create backup parser with minimal logging
+	loggerConfig := logger.Config{
+		Level:   logger.LevelInfo,
+		Verbose: false,
+	}
+	log := logger.New(loggerConfig)
+
+	parser, err := backup.NewBackupParser(backupPath, log)
+	if err != nil {
+		return nil
+	}
+	defer parser.Close()
+
+	// Parse all assets
+	assets, err := parser.ParseAssets()
+	if err != nil {
+		return nil
+	}
+
+	return assets
 }
 
 // formatBytes formats bytes in human readable format
@@ -410,7 +808,32 @@ func runSync(ctx context.Context, config uploader.Config) error {
 	defer ul.Close()
 
 	// Execute sync
-	return ul.Execute(ctx)
+	if err := ul.Execute(ctx); err != nil {
+		return err
+	}
+
+	// Generate and display metadata after successful sync
+	metadata := newCommandMetadata()
+	if err := metadata.setIOSBackupInfo(config.BackupPath); err != nil {
+		fmt.Printf("Warning: Could not collect iOS backup metadata: %v\n", err)
+	}
+
+	// Get asset counts from the filtered assets (via uploader)
+	if assets := getAssetsFromBackup(config.BackupPath); assets != nil {
+		metadata.setAssetCounts(assets)
+	}
+
+	// Display metadata summary
+	metadata.printSummary()
+
+	// Save metadata to manifest if requested
+	if config.SaveManifest != "" {
+		if err := metadata.saveToManifest(config.SaveManifest); err != nil {
+			fmt.Printf("Warning: Could not save metadata to manifest: %v\n", err)
+		}
+	}
+
+	return nil
 }
 
 // runValidate validates a backup directory
