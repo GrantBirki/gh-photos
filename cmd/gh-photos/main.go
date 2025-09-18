@@ -35,7 +35,7 @@ in an organized folder structure.
 The tool supports:
 - Asset classification (photos, videos, screenshots, burst, Live Photos)
 - Privacy controls (excludes Hidden/Recently Deleted by default)  
-- Organized upload structure (photos/YYYY/MM/DD/category/)
+- Organized upload structure (photos/YYYY/MM/DD/<category>/)
 - Dry-run mode for planning
 - Parallel uploads with rClone
 - Manifest generation for auditing
@@ -67,9 +67,9 @@ func NewSyncCommand() *cobra.Command {
 an rClone remote in an organized folder structure.
 
 Examples:
-  gh photos sync /path/to/backup gdrive:Photos
+  gh photos sync /path/to/backup gdrive:photos/backup/path
   gh photos sync /backup/iphone s3:mybucket/photos --dry-run
-  gh photos sync /backup gdrive:Photos --include-hidden --parallel 8`,
+  gh photos sync /backup gdrive:photos --include-hidden --parallel 8`,
 		Args: cobra.ExactArgs(2),
 		PreRunE: func(cmd *cobra.Command, args []string) error {
 			// Disable colors if requested
@@ -97,7 +97,9 @@ Examples:
 	cmd.Flags().BoolVar(&config.IncludeHidden, "include-hidden", false, "include assets flagged as hidden")
 	cmd.Flags().BoolVar(&config.IncludeRecentlyDeleted, "include-recently-deleted", false, "include assets flagged as recently deleted")
 	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "preview operations without uploading")
-	cmd.Flags().BoolVar(&config.SkipExisting, "skip-existing", false, "skip files that already exist on remote")
+	cmd.Flags().BoolVar(&config.SkipExisting, "skip-existing", true, "skip files that already exist on remote")
+	var forceOverwrite bool
+	cmd.Flags().BoolVar(&forceOverwrite, "force-overwrite", false, "overwrite existing files on remote (opposite of --skip-existing)")
 	cmd.Flags().BoolVar(&config.Verify, "verify", false, "verify uploaded files match source")
 	cmd.Flags().BoolVar(&config.ComputeChecksums, "checksum", false, "compute SHA256 checksums for assets")
 	cmd.Flags().IntVar(&config.Parallel, "parallel", 4, "number of parallel uploads")
@@ -136,9 +138,37 @@ Examples:
 			config.EndDate = &endDate
 		}
 
+		// Handle force-overwrite flag (overrides skip-existing)
+		if forceOverwrite {
+			config.SkipExisting = false
+		}
+
 		// Get global flags
 		config.Verbose, _ = cmd.Flags().GetBool("verbose")
-		config.LogLevel, _ = cmd.Flags().GetString("log-level")
+
+		// Handle log level with environment variable fallback and case-insensitive matching
+		logLevel, _ := cmd.Flags().GetString("log-level")
+
+		// Check for LOG_LEVEL environment variable if flag wasn't explicitly set
+		if !cmd.Flags().Changed("log-level") {
+			if envLogLevel := os.Getenv("LOG_LEVEL"); envLogLevel != "" {
+				logLevel = envLogLevel
+			}
+		}
+
+		// Normalize log level to lowercase for case-insensitive matching
+		config.LogLevel = strings.ToLower(strings.TrimSpace(logLevel))
+
+		// Validate log level
+		validLogLevels := map[string]bool{
+			"debug": true,
+			"info":  true,
+			"warn":  true,
+			"error": true,
+		}
+		if !validLogLevels[config.LogLevel] {
+			return fmt.Errorf("invalid log level '%s'. Valid levels: debug, info, warn, error", config.LogLevel)
+		}
 
 		return nil
 	}

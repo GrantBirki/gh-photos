@@ -49,7 +49,12 @@ type Uploader struct {
 func NewUploader(config Config) (*Uploader, error) {
 	// Setup logger
 	logger := log.New(os.Stdout, "", log.LstdFlags)
+
+	// Set appropriate output for debug messages
 	if config.LogLevel == "debug" || config.Verbose {
+		logger.SetOutput(os.Stdout)
+	} else {
+		// For non-debug levels, we'll filter debug messages in the rclone client
 		logger.SetOutput(os.Stdout)
 	}
 
@@ -77,6 +82,8 @@ func NewUploader(config Config) (*Uploader, error) {
 		config.Verify,
 		config.DryRun,
 		config.SkipExisting,
+		logger,
+		config.LogLevel,
 	)
 
 	return &Uploader{

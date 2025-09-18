@@ -26,6 +26,15 @@ func TestNewSyncCommand(t *testing.T) {
 	assert.NotNil(t, cmd.Flags().Lookup("dry-run"))
 	assert.NotNil(t, cmd.Flags().Lookup("include-hidden"))
 	assert.NotNil(t, cmd.Flags().Lookup("parallel"))
+	assert.NotNil(t, cmd.Flags().Lookup("skip-existing"))
+	assert.NotNil(t, cmd.Flags().Lookup("force-overwrite"))
+
+	// Test default values
+	skipExistingFlag := cmd.Flags().Lookup("skip-existing")
+	assert.Equal(t, "true", skipExistingFlag.DefValue, "skip-existing should default to true")
+
+	forceOverwriteFlag := cmd.Flags().Lookup("force-overwrite")
+	assert.Equal(t, "false", forceOverwriteFlag.DefValue, "force-overwrite should default to false")
 }
 
 func TestNewValidateCommand(t *testing.T) {
@@ -41,4 +50,13 @@ func TestNewListCommand(t *testing.T) {
 	assert.Equal(t, "list <backup-path>", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 	assert.True(t, cmd.HasFlags())
+}
+
+func TestRootCommandLogLevel(t *testing.T) {
+	cmd := NewRootCommand()
+
+	// Check that log-level flag exists and has correct default
+	logLevelFlag := cmd.PersistentFlags().Lookup("log-level")
+	assert.NotNil(t, logLevelFlag)
+	assert.Equal(t, "info", logLevelFlag.DefValue, "log-level should default to info")
 }

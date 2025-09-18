@@ -3,6 +3,7 @@ package rclone
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,16 +19,20 @@ type Client struct {
 	verify       bool
 	dryRun       bool
 	skipExisting bool
+	logger       *log.Logger
+	logLevel     string
 }
 
 // NewClient creates a new rclone client
-func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool) *Client {
+func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, logger *log.Logger, logLevel string) *Client {
 	return &Client{
 		remote:       remote,
 		parallel:     parallel,
 		verify:       verify,
 		dryRun:       dryRun,
 		skipExisting: skipExisting,
+		logger:       logger,
+		logLevel:     logLevel,
 	}
 }
 
@@ -217,6 +222,10 @@ func (c *Client) CreateUploadPlan(ctx context.Context, entries []manifest.Entry)
 				planEntry.Error = err.Error()
 			} else if exists {
 				planEntry.Action = ActionSkip
+				if c.logger != nil && c.logLevel == "debug" {
+					c.logger.Printf("[DEBUG] Skipping existing file: %s (already exists at %s:%s)",
+						filepath.Base(entry.SourcePath), c.remote, entry.TargetPath)
+				}
 			}
 		}
 

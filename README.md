@@ -19,7 +19,8 @@ This project is a [`gh cli`](https://github.com/cli/cli) extension that extracts
 - 🔐 Privacy-safe defaults (excludes Hidden/Recently Deleted albums)
 - ☁️ Supports all **rclone** remotes (Google Drive, S3, OneDrive, etc.)
 - ⚡ Parallel uploads for faster performance
-- 🔍 Asset classification (photos, videos, screenshots, burst, Live Photos)
+- � Smart defaults (skips existing files to save bandwidth)
+- �🔍 Asset classification (photos, videos, screenshots, burst, Live Photos)
 - 📋 Manifest generation for operation auditing
 - 🧪 Dry-run mode for safe testing
 
@@ -68,7 +69,7 @@ gh photos sync /backup gdrive:Photos --root "family-photos"
 ### Advanced Usage Examples
 
 ```bash
-# Sync with custom settings
+# Sync with custom settings (skips existing files by default)
 gh photos sync /backup gdrive:photos \
   --include-hidden \
   --parallel 8 \
@@ -81,10 +82,14 @@ gh photos sync /backup s3:mybucket/photos \
   --end-date 2023-12-31 \
   --types photos,videos
 
-# Upload to custom root directory
+# Upload to custom root directory (skipping existing files by default)
 gh photos sync /backup gdrive:photos \
   --root "family-photos" \
-  --skip-existing \
+  --verify
+
+# Force overwrite existing files
+gh photos sync /backup gdrive:photos \
+  --force-overwrite \
   --verify
 
 # List assets with filtering
@@ -113,7 +118,8 @@ gh photos list /backup \
 | `--include-hidden` | Include assets flagged as hidden | `false` |
 | `--include-recently-deleted` | Include assets flagged as recently deleted | `false` |
 | `--dry-run` | Preview operations without uploading | `false` |
-| `--skip-existing` | Skip files that already exist on remote | `false` |
+| `--skip-existing` | Skip files that already exist on remote (smart default) | `true` |
+| `--force-overwrite` | Overwrite existing files on remote (opposite of --skip-existing) | `false` |
 | `--verify` | Verify uploaded files match source | `false` |
 | `--checksum` | Compute SHA256 checksums for assets | `false` |
 | `--parallel` | Number of parallel uploads | `4` |
