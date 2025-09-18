@@ -123,11 +123,27 @@ func validateBackupDirectory(backupPath string) error {
 
 // findPhotosDatabase locates the Photos.sqlite file in the backup directory
 func findPhotosDatabase(backupPath string) (string, error) {
+	// First try to use Manifest.db for hashed iPhone backup structure
+	manifestDB, err := OpenManifestDB(backupPath)
+	if err == nil {
+		defer manifestDB.Close()
+
+		// Try to find Photos.sqlite through Manifest.db
+		if path, err := manifestDB.FindPhotosDatabase(backupPath); err == nil {
+			// Validate it's actually a Photos database
+			if err := photos.ValidateDatabase(path); err == nil {
+				return path, nil
+			}
+		}
+	}
+
+	// Fallback to traditional directory structure search
 	// Common locations for Photos.sqlite in iPhone backups
 	possiblePaths := []string{
 		"Library/Photos/Photos.sqlite",
 		"Library/Photos/Photos.sqlite-wal",
 		"PhotoData/Photos.sqlite",
+		"Media/PhotoData/Photos.sqlite",
 	}
 
 	for _, relativePath := range possiblePaths {
@@ -140,9 +156,9 @@ func findPhotosDatabase(backupPath string) (string, error) {
 		}
 	}
 
-	// Fallback: search for any .sqlite file that might be the Photos database
+	// Final fallback: search for any .sqlite file that might be the Photos database
 	var foundPath string
-	err := filepath.Walk(backupPath, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(backupPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // Continue walking despite errors
 		}

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/grantbirki/gh-photos/internal/backup"
+	"github.com/grantbirki/gh-photos/internal/photos"
 	"github.com/grantbirki/gh-photos/internal/uploader"
 	"github.com/grantbirki/gh-photos/internal/version"
 	"github.com/spf13/cobra"
@@ -251,6 +253,7 @@ func runSync(ctx context.Context, config uploader.Config) error {
 // runValidate validates a backup directory
 func runValidate(backupPath string) error {
 	fmt.Printf("Validating backup directory: %s\n", backupPath)
+	fmt.Println()
 
 	// Basic directory validation
 	info, err := os.Stat(backupPath)
@@ -270,23 +273,132 @@ func runValidate(backupPath string) error {
 
 	color.Green("✓ Valid iPhone backup directory structure")
 
-	// Try to find Photos.sqlite
-	// This is a simplified validation - the real parser would do more thorough checks
+	// Check for Manifest.db (hashed backup structure)
+	manifestDBPath := filepath.Join(backupPath, "Manifest.db")
+	hasManifestDB := false
+	if _, err := os.Stat(manifestDBPath); err == nil {
+		hasManifestDB = true
+		color.Green("✓ Found Manifest.db - this is a hashed iPhone backup")
+	} else {
+		color.Yellow("⚠ No Manifest.db found - checking for traditional directory structure")
+	}
+
+	// Try to find Photos.sqlite using the proper method
+	fmt.Println("\nSearching for Photos.sqlite...")
+
+	if hasManifestDB {
+		// Use manifest database to find Photos.sqlite
+		if err := validateWithManifestDB(backupPath); err != nil {
+			color.Red("✗ Error using Manifest.db: %v", err)
+			color.Yellow("⚠ Falling back to traditional search...")
+			if err := validateTraditionalSearch(backupPath); err != nil {
+				color.Red("✗ Traditional search also failed: %v", err)
+				return fmt.Errorf("could not locate Photos.sqlite")
+			}
+		}
+	} else {
+		// Use traditional directory search
+		if err := validateTraditionalSearch(backupPath); err != nil {
+			color.Red("✗ Photos.sqlite not found: %v", err)
+			return fmt.Errorf("could not locate Photos.sqlite")
+		}
+	}
+
+	fmt.Println()
+	color.Green("✓ Backup validation completed successfully")
+	return nil
+}
+
+// validateWithManifestDB validates using Manifest.db
+func validateWithManifestDB(backupPath string) error {
+	manifestDB, err := backup.OpenManifestDB(backupPath)
+	if err != nil {
+		return err
+	}
+	defer manifestDB.Close()
+
+	// Show available domains for debugging
+	domains, err := manifestDB.GetDomains()
+	if err != nil {
+		color.Yellow("⚠ Could not list domains: %v", err)
+	} else {
+		fmt.Printf("Found %d domains in backup\n", len(domains))
+
+		// Show photo-related domains
+		photoRelatedDomains := []string{}
+		for _, domain := range domains {
+			domainLower := strings.ToLower(domain)
+			if strings.Contains(domainLower, "photo") ||
+				strings.Contains(domainLower, "media") ||
+				strings.Contains(domainLower, "camera") {
+				photoRelatedDomains = append(photoRelatedDomains, domain)
+			}
+		}
+
+		if len(photoRelatedDomains) > 0 {
+			color.Cyan("📸 Photo-related domains found:")
+			for _, domain := range photoRelatedDomains {
+				fmt.Printf("  - %s\n", domain)
+			}
+		}
+	}
+
+	// List all photos-related files for detailed information
+	photosFiles, err := manifestDB.ListPhotosRelatedFiles()
+	if err != nil {
+		color.Yellow("⚠ Could not list photos-related files: %v", err)
+	} else if len(photosFiles) > 0 {
+		color.Cyan("\n📋 Photos-related files found:")
+		for _, file := range photosFiles {
+			fmt.Printf("  - %s: %s\n", file.Domain, file.RelativePath)
+		}
+	}
+
+	// Try to find Photos.sqlite specifically
+	photosPath, err := manifestDB.FindPhotosDatabase(backupPath)
+	if err != nil {
+		return fmt.Errorf("Photos.sqlite not found in Manifest.db: %w", err)
+	}
+
+	// Validate the database
+	if err := photos.ValidateDatabase(photosPath); err != nil {
+		return fmt.Errorf("found Photos.sqlite but validation failed: %w", err)
+	}
+
+	color.Green("✓ Found and validated Photos.sqlite at: %s", photosPath)
+	return nil
+}
+
+// validateTraditionalSearch validates using traditional directory search
+func validateTraditionalSearch(backupPath string) error {
 	found := false
-	filepath.Walk(backupPath, func(path string, info os.FileInfo, err error) error {
+	var foundPath string
+
+	err := filepath.Walk(backupPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Continue walking despite errors
+		}
+
 		if strings.HasSuffix(path, "Photos.sqlite") {
-			color.Green("✓ Found Photos.sqlite at: %s", path)
-			found = true
-			return filepath.SkipDir
+			// Validate it's actually a Photos database
+			if err := photos.ValidateDatabase(path); err == nil {
+				foundPath = path
+				found = true
+				return filepath.SkipDir
+			}
 		}
 		return nil
 	})
 
-	if !found {
-		color.Yellow("⚠ Photos.sqlite not found - photo parsing may fail")
+	if err != nil {
+		return fmt.Errorf("error searching for Photos.sqlite: %w", err)
 	}
 
-	fmt.Println("Backup validation completed successfully")
+	if !found {
+		return fmt.Errorf("Photos.sqlite not found in backup directory")
+	}
+
+	color.Green("✓ Found and validated Photos.sqlite at: %s", foundPath)
 	return nil
 }
 
