@@ -40,9 +40,9 @@ func (h *CustomHandler) Handle(_ context.Context, record slog.Record) error {
 	}
 
 	// Build the formatted message: "2025/09/18 11:55:11 [INFO] message"
-	message := fmt.Sprintf("%s [%s] %s\n", timestamp, levelStr, record.Message)
+	message := fmt.Sprintf("%s [%s] %s", timestamp, levelStr, record.Message)
 
-	// Add structured attributes if any (optional enhancement)
+	// Add structured attributes if any
 	if record.NumAttrs() > 0 {
 		attrs := make([]string, 0, record.NumAttrs())
 		record.Attrs(func(attr slog.Attr) bool {
@@ -50,10 +50,18 @@ func (h *CustomHandler) Handle(_ context.Context, record slog.Record) error {
 			return true
 		})
 		if len(attrs) > 0 {
-			// For now, we'll keep it simple and not include structured data
-			// But this could be enhanced later for more detailed logging
+			message += " ("
+			for i, attr := range attrs {
+				if i > 0 {
+					message += ", "
+				}
+				message += attr
+			}
+			message += ")"
 		}
 	}
+
+	message += "\n"
 
 	_, err := h.output.Write([]byte(message))
 	return err
