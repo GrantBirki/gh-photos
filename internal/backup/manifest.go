@@ -249,3 +249,35 @@ func (m *ManifestDB) GetDomains() ([]string, error) {
 
 	return domains, nil
 }
+
+// HasMediaFiles checks if the backup contains media files (photos/videos)
+func (m *ManifestDB) HasMediaFiles() (bool, error) {
+	// Look for files in common media paths or with media extensions
+	query := `
+		SELECT COUNT(*) 
+		FROM Files 
+		WHERE (
+			relativePath LIKE '%/DCIM/%' OR
+			relativePath LIKE '%/Media/%' OR
+			relativePath LIKE '%/Photos/%' OR
+			relativePath LIKE '%/PhotoData/%' OR
+			relativePath LIKE '%.jpg' OR
+			relativePath LIKE '%.jpeg' OR
+			relativePath LIKE '%.HEIC' OR
+			relativePath LIKE '%.png' OR
+			relativePath LIKE '%.mov' OR
+			relativePath LIKE '%.mp4' OR
+			relativePath LIKE '%.m4v'
+		) AND
+		flags = 1
+		LIMIT 1
+	`
+
+	var count int
+	err := m.db.QueryRow(query).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("failed to check for media files: %w", err)
+	}
+
+	return count > 0, nil
+}

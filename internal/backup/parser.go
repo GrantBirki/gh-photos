@@ -284,9 +284,22 @@ func findPhotosDatabase(backupPath string) (string, error) {
 	return foundPath, nil
 }
 
-// findDCIMDirectory locates the DCIM directory containing the actual media files
+// findDCIMDirectory locates the DCIM directory or verifies media files exist via Manifest.db
 func findDCIMDirectory(backupPath string) (string, error) {
-	// Common locations for DCIM in iPhone backups
+	// First try Manifest.db approach (for hashed iPhone backups)
+	manifestDB, err := OpenManifestDB(backupPath)
+	if err == nil {
+		defer manifestDB.Close()
+
+		// Check if there are any media files in the backup via Manifest.db
+		if hasMediaFiles, err := manifestDB.HasMediaFiles(); err == nil && hasMediaFiles {
+			// For hashed backups, return the backup path as the "DCIM" root
+			// since files will be resolved through Manifest.db
+			return backupPath, nil
+		}
+	}
+
+	// Fallback to traditional directory structure search
 	possiblePaths := []string{
 		"DCIM",
 		"Media/DCIM",
@@ -301,9 +314,9 @@ func findDCIMDirectory(backupPath string) (string, error) {
 		}
 	}
 
-	// Fallback: search for DCIM directory
+	// Final fallback: search for DCIM directory
 	var foundPath string
-	err := filepath.Walk(backupPath, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(backupPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
