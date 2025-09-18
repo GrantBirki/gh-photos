@@ -40,6 +40,39 @@ You can upgrade this extension by running the following command:
 gh ext upgrade photos
 ```
 
+## Finding iPhone Backup Paths 📱
+
+The CLI automatically walks directory structures to find your iPhone backup. You can provide any of these common parent directories, and the tool will locate the actual backup folder:
+
+### Windows Backup Locations
+
+```bash
+# Common Windows iPhone backup paths (the CLI will auto-navigate to the backup folder)
+C:\Users\<username>\Apple\MobileSync\
+C:\Users\<username>\Apple\MobileSync\Backup\
+C:\Users\<username>\AppData\Roaming\Apple Computer\MobileSync\
+C:\Users\<username>\AppData\Roaming\Apple Computer\MobileSync\Backup\
+```
+
+### macOS Backup Locations
+
+```bash
+# Common macOS iPhone backup paths (the CLI will auto-navigate to the backup folder)
+~/Library/Application Support/MobileSync/
+~/Library/Application Support/MobileSync/Backup/
+/Users/<username>/Library/Application Support/MobileSync/
+/Users/<username>/Library/Application Support/MobileSync/Backup/
+```
+
+**Smart Path Resolution**: The CLI automatically detects if you've provided a parent directory and will:
+
+1. Look for a `Backup` subdirectory
+2. Check if that contains `Manifest.db` or `Manifest.plist` files
+3. If there's a single backup folder inside, navigate into it
+4. Validate that it's a proper iPhone backup directory
+
+This means you can simply point to `/Users/username/Library/Application Support/MobileSync/` and the tool will find the actual backup directory automatically.
+
 ## Usage 🚀
 
 The `gh-photos` extension provides three main commands for working with iPhone backup photos:

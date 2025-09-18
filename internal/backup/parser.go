@@ -20,6 +20,13 @@ type BackupParser struct {
 
 // NewBackupParser creates a new backup parser for the given backup directory
 func NewBackupParser(backupPath string) (*BackupParser, error) {
+	// Resolve the backup path using smart directory walking
+	resolvedPath, err := resolveBackupPath(backupPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve backup path: %w", err)
+	}
+	backupPath = resolvedPath
+
 	if err := validateBackupDirectory(backupPath); err != nil {
 		return nil, fmt.Errorf("invalid backup directory: %w", err)
 	}
@@ -99,6 +106,88 @@ func (bp *BackupParser) enrichAsset(asset *types.Asset) error {
 	asset.MimeType = inferMimeType(asset.Filename)
 
 	return nil
+}
+
+// resolveBackupPath automatically walks directory structure to find the actual backup directory
+// Supports common iPhone backup locations by looking for Manifest.db or Manifest.plist files
+func resolveBackupPath(inputPath string) (string, error) {
+	// Check if the current path is already a valid backup directory
+	if isValidBackupDir(inputPath) {
+		return inputPath, nil
+	}
+
+	// Try looking for a "Backup" subdirectory
+	backupDir := filepath.Join(inputPath, "Backup")
+	if info, err := os.Stat(backupDir); err == nil && info.IsDir() {
+		// Check if this Backup directory contains the backup files directly
+		if isValidBackupDir(backupDir) {
+			return backupDir, nil
+		}
+
+		// If not, look for a single subdirectory in the Backup folder
+		entries, err := os.ReadDir(backupDir)
+		if err != nil {
+			return inputPath, nil // Fall back to original path
+		}
+
+		// Find directories (excluding files like .DS_Store, etc.)
+		var subDirs []string
+		for _, entry := range entries {
+			if entry.IsDir() {
+				subDirs = append(subDirs, entry.Name())
+			}
+		}
+
+		// If there's exactly one subdirectory, check if it's a backup directory
+		if len(subDirs) == 1 {
+			potentialBackupDir := filepath.Join(backupDir, subDirs[0])
+			if isValidBackupDir(potentialBackupDir) {
+				return potentialBackupDir, nil
+			}
+		}
+	}
+
+	// Return the original path if no automatic resolution worked
+	return inputPath, nil
+}
+
+// isValidBackupDir checks if a directory contains iPhone backup files
+func isValidBackupDir(path string) bool {
+	// Check for Manifest.plist (required for all iPhone backups)
+	manifestPlist := filepath.Join(path, "Manifest.plist")
+	if _, err := os.Stat(manifestPlist); err != nil {
+		return false
+	}
+
+	// Additional check for Manifest.db (present in newer backups)
+	manifestDB := filepath.Join(path, "Manifest.db")
+	if _, err := os.Stat(manifestDB); err == nil {
+		return true
+	}
+
+	// For older backups that might not have Manifest.db, check for other indicators
+	// Look for the typical hex-named directories (00, 01, 02, etc.) or common backup files
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return false
+	}
+
+	hexDirCount := 0
+	for _, entry := range entries {
+		if entry.IsDir() && len(entry.Name()) == 2 {
+			// Check if it's a hex directory (00-ff)
+			if _, err := fmt.Sscanf(entry.Name(), "%02x", new(int)); err == nil {
+				hexDirCount++
+			}
+		}
+		// Also look for Status.plist which is common in iPhone backups
+		if entry.Name() == "Status.plist" {
+			return true
+		}
+	}
+
+	// If we found several hex directories, it's likely a backup
+	return hexDirCount > 10
 }
 
 // validateBackupDirectory checks if the directory appears to be a valid iPhone backup
