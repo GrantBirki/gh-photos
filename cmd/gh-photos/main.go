@@ -413,8 +413,8 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 	totalFiles := int64(summary.TotalFiles)
 	metadata.IOSBackup.TotalFiles = &totalFiles
 
-	// Display metadata summary
-	metadata.printSummary()
+	// Display metadata summary (without asset counts for extract command)
+	metadata.printSummaryForExtract()
 
 	// Save metadata to a manifest file in the output directory
 	manifestPath := filepath.Join(outputPath, "extraction-metadata.json")
@@ -537,6 +537,43 @@ func (m *CommandMetadata) printSummary() {
 		fmt.Printf("  Burst: %d\n", m.AssetCounts.Burst)
 		fmt.Printf("  Total: %d\n", m.AssetCounts.Total)
 	}
+}
+
+// printSummaryForExtract displays metadata summary without asset counts (for extract command)
+func (m *CommandMetadata) printSummaryForExtract() {
+	fmt.Printf("\n📊 Command Metadata Summary:\n")
+	fmt.Printf("  Completed at: %s\n", m.CompletedAt.Format(time.RFC3339))
+	fmt.Printf("  CLI version: %s\n", m.CLIVersion)
+	fmt.Printf("  System: %s %s", m.System.OS, m.System.Arch)
+	if m.System.Version != "" {
+		fmt.Printf(" (%s)", m.System.Version)
+	}
+	fmt.Println()
+
+	if m.IOSBackup.BackupPath != "" {
+		fmt.Printf("\n📱 iOS Backup Info:\n")
+		fmt.Printf("  Backup path: %s\n", m.IOSBackup.BackupPath)
+		fmt.Printf("  Backup type: %s\n", m.IOSBackup.BackupType)
+		fmt.Printf("  Encrypted: %t\n", m.IOSBackup.IsEncrypted)
+
+		if m.IOSBackup.DeviceName != nil {
+			fmt.Printf("  Device name: %s\n", *m.IOSBackup.DeviceName)
+		}
+		if m.IOSBackup.DeviceModel != nil {
+			fmt.Printf("  Device model: %s\n", *m.IOSBackup.DeviceModel)
+		}
+		if m.IOSBackup.IOSVersion != nil {
+			fmt.Printf("  iOS version: %s\n", *m.IOSBackup.IOSVersion)
+		}
+		if m.IOSBackup.BackupDate != nil {
+			fmt.Printf("  Backup date: %s\n", *m.IOSBackup.BackupDate)
+		}
+		if m.IOSBackup.TotalFiles != nil {
+			fmt.Printf("  Total files: %d\n", *m.IOSBackup.TotalFiles)
+		}
+	}
+
+	// Note: Asset counts are not displayed for extract command as they require Photos database parsing
 }
 
 // saveToManifest adds metadata to manifest JSON file

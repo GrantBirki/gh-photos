@@ -234,3 +234,27 @@ func TestGetOSVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintSummaryForExtract(t *testing.T) {
+	metadata := newCommandMetadata()
+	deviceName := "Test iPhone"
+	metadata.IOSBackup.DeviceName = &deviceName
+	metadata.IOSBackup.BackupType = "hashed"
+
+	// Asset counts should not be displayed even if set
+	metadata.AssetCounts = AssetCounts{
+		Photos: 100,
+		Videos: 50,
+		Total:  150,
+	}
+
+	// This should not panic (we can't easily test the output without capturing stdout)
+	// but we can ensure it doesn't crash and that the method exists
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("printSummaryForExtract() panicked: %v", r)
+		}
+	}()
+
+	metadata.printSummaryForExtract()
+}
