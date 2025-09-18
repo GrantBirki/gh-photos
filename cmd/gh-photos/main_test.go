@@ -1,32 +1,44 @@
 package main
 
 import (
-	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
-func TestMain_VersionFlag(t *testing.T) {
-	// Save original args
-	oldArgs := os.Args
-	defer func() { os.Args = oldArgs }()
+func TestNewRootCommand(t *testing.T) {
+	cmd := NewRootCommand()
 
-	// Test version flag
-	os.Args = []string{"gh-photos", "--version"}
-
-	// We can't easily test main() since it calls os.Exit()
-	// But we can test that the flag is recognized by checking if it would be parsed
-	// This is mainly for coverage of the main package
+	assert.Equal(t, "gh-photos", cmd.Use)
+	assert.NotEmpty(t, cmd.Short)
+	assert.NotEmpty(t, cmd.Long)
+	assert.True(t, cmd.HasSubCommands())
 }
 
-func TestMain_HelpFlag(t *testing.T) {
-	// Save original args
-	oldArgs := os.Args
-	defer func() { os.Args = oldArgs }()
+func TestNewSyncCommand(t *testing.T) {
+	cmd := NewSyncCommand()
 
-	// Test help flag
-	os.Args = []string{"gh-photos", "--help"}
+	assert.Equal(t, "sync <backup-path> <remote>", cmd.Use)
+	assert.NotEmpty(t, cmd.Short)
+	assert.True(t, cmd.HasFlags())
 
-	// Again, mainly for coverage purposes
+	// Check that required flags exist
+	assert.NotNil(t, cmd.Flags().Lookup("dry-run"))
+	assert.NotNil(t, cmd.Flags().Lookup("include-hidden"))
+	assert.NotNil(t, cmd.Flags().Lookup("parallel"))
 }
 
-// Note: Testing main() directly is challenging because it calls os.Exit()
+func TestNewValidateCommand(t *testing.T) {
+	cmd := NewValidateCommand()
+
+	assert.Equal(t, "validate <backup-path>", cmd.Use)
+	assert.NotEmpty(t, cmd.Short)
+}
+
+func TestNewListCommand(t *testing.T) {
+	cmd := NewListCommand()
+
+	assert.Equal(t, "list <backup-path>", cmd.Use)
+	assert.NotEmpty(t, cmd.Short)
+	assert.True(t, cmd.HasFlags())
+}
