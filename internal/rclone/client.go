@@ -480,7 +480,15 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			}
 
 			// Test 2: List what actually exists in the target directory
-			targetDirPath := filepath.Dir(remotePath)
+			// Extract directory path from remote path (don't use filepath.Dir which is OS-specific)
+			lastSlash := strings.LastIndex(remotePath, "/")
+			var targetDirPath string
+			if lastSlash > 0 {
+				targetDirPath = remotePath[:lastSlash]
+			} else {
+				// If no slash found, use the remote root
+				targetDirPath = c.remote
+			}
 			c.logDebug("listing target directory contents", "target_dir", targetDirPath)
 			if err := c.listRemoteDirectory(targetDirPath); err != nil {
 				c.logError("target directory listing failed", "error", err, "target_dir", targetDirPath)

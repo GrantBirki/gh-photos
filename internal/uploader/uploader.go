@@ -196,6 +196,11 @@ func (u *Uploader) Execute(ctx context.Context) error {
 
 	// Execute uploads if not dry run
 	if !u.config.DryRun {
+		// Run startup connectivity tests before uploads
+		if err := u.rcloneClient.RunStartupConnectivityTest(); err != nil {
+			return fmt.Errorf("startup connectivity test failed: %w", err)
+		}
+
 		u.logInfo("Starting uploads...")
 
 		// Filter plan entries that need uploading
