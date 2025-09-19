@@ -398,7 +398,8 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 
 		// Build rclone command for batch upload
-		dest := c.buildRemotePath(normalizedDir)
+		// Copy from tempDir to remote root - rclone will recreate the directory structure
+		dest := c.buildRemotePath("")
 		args := []string{"copy", tempDir, dest}
 
 		if c.skipExisting {
@@ -459,51 +460,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			return fmt.Errorf("rclone batch upload failed: %w", err)
 		}
 
-		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())
-
-		// After successful upload, run comprehensive diagnostics
-		if len(groupEntries) > 0 {
-			sampleEntry := groupEntries[0]
-			remotePath := c.buildRemotePath(sampleEntry.TargetPath)
-			c.logDebug("running post-upload diagnostics", "sample_remote_path", remotePath, "source", sampleEntry.SourcePath)
-
-			// Test 1: Check if the base remote directory exists
-			baseRemote := c.remote
-			if strings.Contains(c.remote, ":") && !strings.HasSuffix(c.remote, ":") {
-				baseRemote = c.remote[:strings.Index(c.remote, ":")+1]
-			} else if !strings.HasSuffix(c.remote, ":") {
-				baseRemote = c.remote + ":"
-			}
-			c.logDebug("testing base remote connectivity", "base_remote", baseRemote)
-			if err := c.testRemoteConnectivity(baseRemote); err != nil {
-				c.logError("base remote connectivity test failed", "error", err, "base_remote", baseRemote)
-			}
-
-			// Test 2: List what actually exists in the target directory
-			// Extract directory path from remote path (don't use filepath.Dir which is OS-specific)
-			lastSlash := strings.LastIndex(remotePath, "/")
-			var targetDirPath string
-			if lastSlash > 0 {
-				targetDirPath = remotePath[:lastSlash]
-			} else {
-				// If no slash found, use the remote root
-				targetDirPath = c.remote
-			}
-			c.logDebug("listing target directory contents", "target_dir", targetDirPath)
-			if err := c.listRemoteDirectory(targetDirPath); err != nil {
-				c.logError("target directory listing failed", "error", err, "target_dir", targetDirPath)
-			}
-
-			// Test 3: Write capability testing moved to startup phase
-			// See RunStartupConnectivityTest() for metadata upload testing
-
-			// Test 4: Verify specific file visibility
-			c.logDebug("verifying sample file visibility", "remote_path", remotePath, "source", sampleEntry.SourcePath)
-			if err := c.verifySingleFileVisibility(remotePath); err != nil {
-				c.logError("sample file verification failed", "error", err, "remote_path", remotePath, "source", sampleEntry.SourcePath)
-				// Don't fail upload - just log the issue for debugging
-			}
-		} // Mark all entries in this batch as successful
+		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode()) // Mark all entries in this batch as successful
 		for _, entry := range groupEntries {
 			completed++
 			// Find original index
