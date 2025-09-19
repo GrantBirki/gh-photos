@@ -884,7 +884,6 @@ type UploadPlan struct {
 	Entries []UploadPlanEntry `json:"entries"`
 }
 
-
 // PrintUploadPlan prints a human-readable upload plan
 func PrintUploadPlan(plan []UploadPlanEntry) {
 	fmt.Printf("\nUpload Plan:\n")
