@@ -158,8 +158,14 @@ func (bp *BackupParser) Close() error {
 func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 	if bp.isExtracted {
 		// For extracted directories, return pre-loaded assets from metadata
+		fmt.Printf("Processing %d extracted assets...\n", len(bp.extractedAssets))
 		var validAssets []*types.Asset
+		processed := 0
 		for _, asset := range bp.extractedAssets {
+			processed++
+			if processed%100 == 0 || processed == len(bp.extractedAssets) {
+				fmt.Printf("Asset processing progress: %d/%d (%.1f%%)\n", processed, len(bp.extractedAssets), float64(processed)/float64(len(bp.extractedAssets))*100)
+			}
 			if err := bp.enrichAsset(asset); err != nil {
 				// Check if this might be in a derivatives or ignored directory
 				if strings.Contains(asset.SourcePath, "derivatives") ||
@@ -176,18 +182,24 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 				validAssets = append(validAssets, asset)
 			}
 		}
+		fmt.Printf("Asset processing completed. %d valid assets ready for upload.\n", len(validAssets))
 		return validAssets, nil
-	}
-
-	// For original backup directories, use Photos database
+	} // For original backup directories, use Photos database
+	fmt.Printf("Querying Photos database...\n")
 	assets, err := bp.photosDB.GetAssets(bp.dcimPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get assets from database: %w", err)
 	}
+	fmt.Printf("Found %d assets in Photos database, enriching with file information...\n", len(assets))
 
 	// Validate and enrich assets with file information
 	var validAssets []*types.Asset
+	processed := 0
 	for _, asset := range assets {
+		processed++
+		if processed%100 == 0 || processed == len(assets) {
+			fmt.Printf("Asset enrichment progress: %d/%d (%.1f%%)\n", processed, len(assets), float64(processed)/float64(len(assets))*100)
+		}
 		if err := bp.enrichAsset(asset); err != nil {
 			// Check if this might be in a derivatives or ignored directory
 			if strings.Contains(asset.SourcePath, "derivatives") ||
@@ -206,6 +218,7 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 		}
 	}
 
+	fmt.Printf("Asset enrichment completed. %d valid assets ready for upload.\n", len(validAssets))
 	return validAssets, nil
 }
 

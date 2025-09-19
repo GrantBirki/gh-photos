@@ -264,8 +264,13 @@ func (d *Database) GetAssets(dcimPath string) ([]*types.Asset, error) {
 	defer rows.Close()
 
 	var assets []*types.Asset
+	processed := 0
 
 	for rows.Next() {
+		processed++
+		if processed%1000 == 0 {
+			d.logger.Info("Database query progress", "processed", processed)
+		}
 		var (
 			id               int64
 			filename         sql.NullString
@@ -339,13 +344,10 @@ func (d *Database) GetAssets(dcimPath string) ([]*types.Asset, error) {
 			Flags:        flags,
 		}
 
-		// Get file size if file exists
-		if fileInfo, err := filepath.Glob(sourcePath); err == nil && len(fileInfo) > 0 {
-			if stat, err := filepath.Abs(fileInfo[0]); err == nil {
-				if info, err := filepath.Abs(stat); err == nil {
-					asset.SourcePath = info
-				}
-			}
+		// Optimize file path resolution - avoid expensive Glob operations
+		// Just ensure we have an absolute path without file system calls
+		if absPath, err := filepath.Abs(sourcePath); err == nil {
+			asset.SourcePath = absPath
 		}
 
 		assets = append(assets, asset)
@@ -355,6 +357,7 @@ func (d *Database) GetAssets(dcimPath string) ([]*types.Asset, error) {
 		return nil, fmt.Errorf("error iterating rows: %w", err)
 	}
 
+	d.logger.Info("Database query completed", "total_assets", len(assets), "processed_rows", processed)
 	return assets, nil
 }
 
