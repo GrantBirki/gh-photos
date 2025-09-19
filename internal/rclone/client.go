@@ -196,19 +196,14 @@ func setupRcloneCmd(cmd *exec.Cmd) {
 }
 
 // NewClient creates a new rclone client
-func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, logger *logger.Logger, logLevel string, remotePreScan ...bool) *Client {
-	preScan := false
-	if len(remotePreScan) > 0 {
-		preScan = remotePreScan[0]
-	}
-
+func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, logger *logger.Logger, logLevel string) *Client {
 	return &Client{
 		remote:        remote,
 		parallel:      parallel,
 		verify:        verify,
 		dryRun:        dryRun,
 		skipExisting:  skipExisting,
-		remotePreScan: preScan,
+		remotePreScan: false, // Disabled for now
 		logger:        logger,
 		logLevel:      logLevel,
 	}

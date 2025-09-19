@@ -151,20 +151,17 @@ Examples:
 	cmd.Flags().BoolVar(&config.IncludeRecentlyDeleted, "include-recently-deleted", false, "include assets flagged as recently deleted")
 	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "preview operations without uploading")
 	cmd.Flags().BoolVar(&config.SkipExisting, "skip-existing", true, "skip files that already exist on remote")
-	cmd.Flags().BoolVar(&config.RemotePreScan, "remote-pre-scan", false, "pre-scan remote to mark existing files before upload (slower; by default rely on rclone's own existence checks)")
 	var forceOverwrite bool
 	cmd.Flags().BoolVar(&forceOverwrite, "force-overwrite", false, "overwrite existing files on remote (opposite of --skip-existing)")
 	cmd.Flags().BoolVar(&config.Verify, "verify", false, "verify uploaded files match source")
 	cmd.Flags().BoolVar(&config.ComputeChecksums, "checksum", false, "compute SHA256 checksums for assets")
 	cmd.Flags().IntVar(&config.Parallel, "parallel", 4, "number of parallel uploads")
 	cmd.Flags().StringVar(&config.SaveManifest, "save-manifest", "", "path to save operation manifest (JSON)")
+	cmd.Flags().StringVar(&config.SaveAuditManifest, "save-audit-manifest", "", "path to save an additional copy of the audit trail manifest (JSON)")
+	cmd.Flags().BoolVar(&config.UseLastCommand, "use-last-command", false, "re-run the last successful command from ~/gh-photos/manifest.json")
 	cmd.Flags().StringSliceVar(&config.AssetTypes, "types", nil, "comma-separated asset types to include (photos,videos,screenshots,burst,live_photos)")
 	cmd.Flags().StringSliceVar(&config.IgnorePatterns, "ignore", nil, "patterns to ignore (supports wildcards and directory names like 'PhotoData')")
 	cmd.Flags().StringVar(&config.PathGranularity, "path-granularity", "day", "date path depth: year, month, or day (default: day)")
-
-	// Audit trail flags
-	cmd.Flags().StringVar(&config.SaveAuditManifest, "save-audit-manifest", "", "path to save an additional copy of the audit trail manifest (JSON)")
-	cmd.Flags().BoolVar(&config.UseLastCommand, "use-last-command", false, "re-run the last successful command from ~/gh-photos/manifest.json")
 
 	// Date filter flags
 	var startDateStr, endDateStr string
@@ -180,11 +177,17 @@ Examples:
 			}
 		}
 
-		// Parse date filters
+		// Get verbose flag
+		config.Verbose, _ = cmd.Flags().GetBool("verbose")
+
+		// Handle date filters
+		startDateStr, _ := cmd.Flags().GetString("start-date")
+		endDateStr, _ := cmd.Flags().GetString("end-date")
+
 		if startDateStr != "" {
 			startDate, err := time.Parse("2006-01-02", startDateStr)
 			if err != nil {
-				return fmt.Errorf("invalid start-date format: %w", err)
+				return fmt.Errorf("invalid start date format: %w", err)
 			}
 			config.StartDate = &startDate
 		}
@@ -192,7 +195,7 @@ Examples:
 		if endDateStr != "" {
 			endDate, err := time.Parse("2006-01-02", endDateStr)
 			if err != nil {
-				return fmt.Errorf("invalid end-date format: %w", err)
+				return fmt.Errorf("invalid end date format: %w", err)
 			}
 			config.EndDate = &endDate
 		}

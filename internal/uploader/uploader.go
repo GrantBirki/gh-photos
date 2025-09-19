@@ -22,24 +22,23 @@ import (
 type Config struct {
 	BackupPath             string
 	Remote                 string
+	Parallel               int
 	IncludeHidden          bool
 	IncludeRecentlyDeleted bool
 	DryRun                 bool
 	SkipExisting           bool
-	RemotePreScan          bool // new: optionally pre-scan remote to mark skips before upload
 	Verify                 bool
-	Parallel               int
+	SaveManifest           string
+	LogLevel               string
 	StartDate              *time.Time
 	EndDate                *time.Time
 	AssetTypes             []string
-	SaveManifest           string
+	PathGranularity        string
+	IgnorePatterns         []string
 	ComputeChecksums       bool
-	LogLevel               string
 	Verbose                bool
 	SaveAuditManifest      string
 	UseLastCommand         bool
-	IgnorePatterns         []string
-	PathGranularity        string // year, month, day (default day)
 }
 
 // Uploader orchestrates the photo backup process
@@ -98,7 +97,6 @@ func NewUploader(config Config) (*Uploader, error) {
 		config.SkipExisting,
 		logger,
 		config.LogLevel,
-		config.RemotePreScan,
 	)
 
 	// Set backup path for metadata file discovery
@@ -142,10 +140,13 @@ func (u *Uploader) Execute(ctx context.Context) error {
 
 	// Parse assets from backup
 	u.logInfo("Parsing assets from backup...")
+	parseStartTime := time.Now()
 	assets, err := u.parser.ParseAssets()
 	if err != nil {
 		return fmt.Errorf("failed to parse assets: %w", err)
 	}
+	parseDuration := time.Since(parseStartTime)
+	u.logInfo("Asset parsing completed in %v", parseDuration.Round(time.Millisecond))
 	u.logInfo("Found %d total assets", len(assets))
 
 	// Filter assets
