@@ -75,6 +75,10 @@ func NewUploader(config Config) (*Uploader, error) {
 		if err := rclone.ValidateRemote(config.Remote); err != nil {
 			return nil, fmt.Errorf("remote validation failed: %w", err)
 		}
+
+		if err := rclone.ValidateRemoteAuthentication(config.Remote); err != nil {
+			return nil, fmt.Errorf("remote authentication failed: %w", err)
+		}
 	}
 
 	// Create backup parser

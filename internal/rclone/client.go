@@ -123,6 +123,69 @@ func (c *Client) CheckRemoteExists(ctx context.Context, remotePath string) (bool
 	return strings.TrimSpace(string(output)) != "", nil
 }
 
+// BatchCheckRemoteExists efficiently checks which files exist on remote by listing all files once
+func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.Entry) (map[string]bool, error) {
+	// Extract unique directories to minimize the scope of our listing
+	dirs := make(map[string]bool)
+	for _, entry := range entries {
+		dir := filepath.Dir(entry.TargetPath)
+		if dir != "." && dir != "/" {
+			dirs[dir] = true
+		}
+	}
+
+	existingFiles := make(map[string]bool)
+
+	// If we have many different directories, just list everything recursively
+	if len(dirs) > 50 {
+		return c.listAllRemoteFiles(ctx)
+	}
+
+	// Otherwise, list each directory separately to be more efficient
+	for dir := range dirs {
+		remotePath := fmt.Sprintf("%s:%s", c.remote, dir)
+		cmd := exec.CommandContext(ctx, "rclone", "lsf", remotePath, "-R")
+		output, err := cmd.Output()
+
+		if err != nil {
+			// Directory might not exist, continue with others
+			continue
+		}
+
+		files := strings.Split(strings.TrimSpace(string(output)), "\n")
+		for _, file := range files {
+			if file != "" {
+				// Construct full path relative to target
+				fullPath := filepath.Join(dir, file)
+				existingFiles[fullPath] = true
+			}
+		}
+	}
+
+	return existingFiles, nil
+}
+
+// listAllRemoteFiles lists all files on the remote recursively
+func (c *Client) listAllRemoteFiles(ctx context.Context) (map[string]bool, error) {
+	remotePath := fmt.Sprintf("%s:", c.remote)
+	cmd := exec.CommandContext(ctx, "rclone", "lsf", remotePath, "-R")
+	output, err := cmd.Output()
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to list remote files: %w", err)
+	}
+
+	existingFiles := make(map[string]bool)
+	files := strings.Split(strings.TrimSpace(string(output)), "\n")
+	for _, file := range files {
+		if file != "" {
+			existingFiles[file] = true
+		}
+	}
+
+	return existingFiles, nil
+}
+
 // VerifyUpload verifies that an uploaded file matches the source
 func (c *Client) VerifyUpload(ctx context.Context, entry manifest.Entry) error {
 	if c.dryRun {
@@ -205,22 +268,70 @@ func ValidateRemote(remote string) error {
 	return fmt.Errorf("remote '%s' not found in configured remotes", remoteName)
 }
 
+// ValidateRemoteAuthentication tests if the remote is accessible and authenticated
+func ValidateRemoteAuthentication(remote string) error {
+	// Test authentication by trying to list the root directory
+	cmd := exec.Command("rclone", "lsf", remote+":", "--max-depth", "1")
+	cmd.Stderr = nil // Suppress stderr to avoid credential prompts
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("remote authentication failed - credentials may be expired or invalid: %w", err)
+	}
+
+	return nil
+}
+
 // CreateUploadPlan creates a plan for uploading assets
 func (c *Client) CreateUploadPlan(ctx context.Context, entries []manifest.Entry) ([]UploadPlanEntry, error) {
 	plan := make([]UploadPlanEntry, 0, len(entries))
 
-	for _, entry := range entries {
+	// If skip existing is enabled, batch check all remote files at once
+	var existingFiles map[string]bool
+	if c.skipExisting {
+		if c.logger != nil {
+			c.logger.Info("Checking existing files on remote (this may take a moment)...", "files_to_check", len(entries))
+		}
+
+		var err error
+		existingFiles, err = c.BatchCheckRemoteExists(ctx, entries)
+		if err != nil {
+			if c.logger != nil {
+				c.logger.Warn("Failed to batch check remote files, falling back to individual checks", "error", err.Error())
+			}
+			// Fall back to individual checks if batch fails
+			existingFiles = nil
+		} else if c.logger != nil {
+			existingCount := len(existingFiles)
+			c.logger.Info("Remote file check complete", "existing_files", existingCount)
+		}
+	}
+
+	// Process each entry
+	for i, entry := range entries {
 		planEntry := UploadPlanEntry{
 			Entry:  entry,
 			Action: ActionUpload,
 		}
 
 		if c.skipExisting {
-			exists, err := c.CheckRemoteExists(ctx, entry.TargetPath)
-			if err != nil {
-				planEntry.Action = ActionError
-				planEntry.Error = err.Error()
-			} else if exists {
+			var exists bool
+			var err error
+
+			if existingFiles != nil {
+				// Use batch result
+				exists = existingFiles[entry.TargetPath]
+			} else {
+				// Fall back to individual check
+				exists, err = c.CheckRemoteExists(ctx, entry.TargetPath)
+				if err != nil {
+					planEntry.Action = ActionError
+					planEntry.Error = err.Error()
+					plan = append(plan, planEntry)
+					continue
+				}
+			}
+
+			if exists {
 				planEntry.Action = ActionSkip
 				if c.logger != nil && c.logLevel == "debug" {
 					c.logger.Debug("Skipping existing file",
@@ -232,6 +343,11 @@ func (c *Client) CreateUploadPlan(ctx context.Context, entries []manifest.Entry)
 		}
 
 		plan = append(plan, planEntry)
+
+		// Progress reporting for large uploads
+		if c.logger != nil && len(entries) > 100 && (i+1)%500 == 0 {
+			c.logger.Info("Upload plan progress", "processed", i+1, "total", len(entries))
+		}
 	}
 
 	return plan, nil
