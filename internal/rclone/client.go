@@ -91,7 +91,23 @@ func (c *Client) buildRemotePath(subPath string) string {
 			joined = basePath + "/" + subPath
 		}
 	}
-	return remoteName + ":" + joined
+
+	result := remoteName + ":" + joined
+
+	// Add debug logging for path construction (only if debug logging is enabled)
+	if c != nil && c.logLevel == "debug" {
+		c.logDebug("buildRemotePath path construction",
+			"input_subPath", subPath,
+			"parsed_remoteName", remoteName,
+			"parsed_basePath", basePath,
+			"normalized_basePath", basePath,
+			"normalized_subPath", subPath,
+			"joined_path", joined,
+			"final_result", result,
+		)
+	}
+
+	return result
 }
 
 // Helper logging methods to avoid nil checks everywhere
@@ -116,6 +132,37 @@ func (c *Client) logWarn(msg string, args ...any) {
 func (c *Client) logError(msg string, args ...any) {
 	if c.logger != nil {
 		c.logger.Error(msg, args...)
+	}
+}
+
+// logTempDirStructure logs the structure of a temporary directory for debugging
+func (c *Client) logTempDirStructure(tempDir string) {
+	if c.logger == nil {
+		return
+	}
+
+	err := filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		relPath, _ := filepath.Rel(tempDir, path)
+		if relPath == "." {
+			return nil
+		}
+
+		// Log file/directory with its relative path
+		if info.IsDir() {
+			c.logDebug("temp dir structure", "type", "directory", "path", relPath)
+		} else {
+			c.logDebug("temp dir structure", "type", "file", "path", relPath, "size", info.Size())
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		c.logError("failed to walk temp directory", "error", err, "temp_dir", tempDir)
 	}
 }
 
@@ -296,6 +343,17 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	dest := c.buildRemotePath(normalized)
 	args = append(args, dest)
 
+	c.logDebug("=== SINGLE FILE UPLOAD PATH ANALYSIS ===")
+	c.logDebug("single file upload path details",
+		"original_source", entry.SourcePath,
+		"original_target", entry.TargetPath,
+		"normalized_target", normalized,
+		"buildRemotePath_input", normalized,
+		"final_destination", dest,
+		"rclone_command", strings.Join(args, " "),
+	)
+	c.logDebug("=== END SINGLE FILE UPLOAD ANALYSIS ===")
+
 	c.logDebug("starting single file upload",
 		"source", entry.SourcePath,
 		"target", entry.TargetPath,
@@ -413,8 +471,11 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 				progressCallback(completed, total, fmt.Sprintf("Preparing %s", filepath.Base(entry.SourcePath)))
 			}
 
-			// Create target directory structure in temp
-			tempTargetPath := filepath.Join(tempDir, entry.TargetPath)
+			// Normalize target path to use forward slashes for consistent cross-platform behavior
+			normalizedTargetPath := strings.ReplaceAll(entry.TargetPath, "\\", "/")
+
+			// Create target directory structure in temp using normalized path
+			tempTargetPath := filepath.Join(tempDir, normalizedTargetPath)
 			if err := os.MkdirAll(filepath.Dir(tempTargetPath), 0755); err != nil {
 				return fmt.Errorf("failed to create temp directory structure: %w", err)
 			}
@@ -430,6 +491,32 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		// Build rclone command for batch upload
 		// Copy from tempDir to remote root - rclone will recreate the directory structure
 		dest := c.buildRemotePath("")
+		c.logDebug("batch upload destination", "dest", dest, "temp_dir", tempDir)
+
+		// Add detailed file-by-file destination logging for debugging
+		if c.logLevel == "debug" {
+			c.logDebug("=== PRE-UPLOAD FILE DESTINATION ANALYSIS ===")
+			c.logDebug("rclone will copy from temp directory to remote destination", "temp_source", tempDir, "remote_dest", dest)
+
+			for i, entry := range groupEntries {
+				// Show where each file is located in temp directory
+				normalizedTargetPath := strings.ReplaceAll(entry.TargetPath, "\\", "/")
+				tempFilePath := filepath.Join(tempDir, normalizedTargetPath)
+
+				// Calculate where rclone will place this file on the remote
+				finalRemotePath := c.buildRemotePath(normalizedTargetPath)
+
+				c.logDebug("file mapping",
+					"index", i+1,
+					"original_source", entry.SourcePath,
+					"temp_location", tempFilePath,
+					"target_path", normalizedTargetPath,
+					"final_remote_path", finalRemotePath,
+				)
+			}
+			c.logDebug("=== END PRE-UPLOAD ANALYSIS ===")
+		}
+
 		args := []string{"copy", tempDir, dest}
 
 		if c.skipExisting {
@@ -443,8 +530,20 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		// Add progress reporting
 		args = append(args, "--progress", "--stats-one-line")
 
+		// Add verbose output in debug mode
+		if c.logLevel == "debug" {
+			args = append(args, "--verbose")
+		}
+
 		// Execute batch rclone command
 		c.logDebug("executing rclone batch", "dir", targetDir, "file_count", len(groupEntries), "args", strings.Join(args, " "))
+		c.logDebug("temp directory contents before rclone", "temp_dir", tempDir)
+
+		// Log the actual directory structure being uploaded for debugging
+		if c.logLevel == "debug" {
+			c.logTempDirStructure(tempDir)
+		}
+
 		cmd := exec.CommandContext(ctx, "rclone", args...)
 		setupRcloneCmd(cmd)
 
@@ -901,7 +1000,14 @@ func (c *Client) testRemoteWriteCapabilityStartup() error {
 	// This puts metadata under the same path as the uploaded photos
 	metadataRemotePath := c.buildRemotePath("metadata/" + metadataFileName)
 
+	c.logDebug("=== METADATA UPLOAD PATH ANALYSIS ===")
 	c.logDebug("uploading extraction metadata to remote", "local_path", metadataPath, "remote_path", metadataRemotePath)
+	c.logDebug("metadata upload details",
+		"sub_path", "metadata/"+metadataFileName,
+		"final_remote_path", metadataRemotePath,
+		"buildRemotePath_input", "metadata/"+metadataFileName,
+	)
+	c.logDebug("=== END METADATA UPLOAD ANALYSIS ===")
 
 	// Try to upload the metadata file using rclone copyto
 	args := []string{"copyto", metadataPath, metadataRemotePath}
