@@ -20,8 +20,8 @@ type Database struct {
 	logger *logger.Logger
 }
 
-// NewDatabase creates a new Photos database connection
-func NewDatabase(dbPath string, logger *logger.Logger) (*Database, error) {
+// CreateDatabase creates a new Photos database connection
+func CreateDatabase(dbPath string, logger *logger.Logger) (*Database, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database %s: %w", dbPath, err)

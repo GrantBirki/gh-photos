@@ -19,6 +19,7 @@ import (
 	"github.com/grantbirki/gh-photos/internal/photos"
 	"github.com/grantbirki/gh-photos/internal/types"
 	"github.com/grantbirki/gh-photos/internal/uploader"
+	"github.com/grantbirki/gh-photos/internal/utils"
 	"github.com/grantbirki/gh-photos/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -92,7 +93,7 @@ func main() {
 		}
 	}()
 
-	if err := NewRootCommand().ExecuteContext(ctx); err != nil {
+	if err := CreateRootCommand().ExecuteContext(ctx); err != nil {
 		// If the context was canceled, use 130 exit code (conventional for SIGINT)
 		if ctx.Err() != nil {
 			os.Exit(130)
@@ -102,8 +103,8 @@ func main() {
 	}
 }
 
-// NewRootCommand creates the root command
-func NewRootCommand() *cobra.Command {
+// CreateRootCommand creates the root command
+func CreateRootCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "gh-photos",
 		Short: "A GitHub CLI extension for backing up iPhone photos to cloud storage",
@@ -129,16 +130,16 @@ The tool supports:
 	cmd.PersistentFlags().String("log-level", "info", "log level (debug, info, warn, error)")
 
 	// Add subcommands
-	cmd.AddCommand(NewSyncCommand())
-	cmd.AddCommand(NewValidateCommand())
-	cmd.AddCommand(NewListCommand())
-	cmd.AddCommand(NewExtractCommand())
+	cmd.AddCommand(CreateSyncCommand())
+	cmd.AddCommand(CreateValidateCommand())
+	cmd.AddCommand(CreateListCommand())
+	cmd.AddCommand(CreateExtractCommand())
 
 	return cmd
 }
 
-// NewSyncCommand creates the sync subcommand
-func NewSyncCommand() *cobra.Command {
+// CreateSyncCommand creates the sync subcommand
+func CreateSyncCommand() *cobra.Command {
 	var config uploader.Config
 
 	cmd := &cobra.Command{
@@ -182,6 +183,8 @@ Examples:
 	cmd.Flags().BoolVar(&config.Verify, "verify", false, "verify uploaded files match source")
 	cmd.Flags().BoolVar(&config.ComputeChecksums, "checksum", false, "compute SHA256 checksums for assets")
 	cmd.Flags().IntVar(&config.Parallel, "parallel", 4, "number of parallel uploads")
+	var batchTimeoutStr string
+	cmd.Flags().StringVar(&batchTimeoutStr, "batch-timeout", "30m", "timeout for individual batch uploads (e.g., 30m, 1h)")
 	cmd.Flags().StringVar(&config.SaveManifest, "save-manifest", "", "path to save operation manifest (JSON)")
 	cmd.Flags().StringVar(&config.SaveAuditManifest, "save-audit-manifest", "", "path to save an additional copy of the audit trail manifest (JSON)")
 	cmd.Flags().BoolVar(&config.UseLastCommand, "use-last-command", false, "re-run the last successful command from ~/gh-photos/manifest.json")
@@ -194,7 +197,7 @@ Examples:
 	cmd.Flags().StringVar(&startDateStr, "start-date", "", "start date filter (YYYY-MM-DD)")
 	cmd.Flags().StringVar(&endDateStr, "end-date", "", "end date filter (YYYY-MM-DD)")
 
-	// Custom PreRunE to handle date parsing
+	// Custom PreRunE to handle configuration setup
 	originalPreRunE := cmd.PreRunE
 	cmd.PreRunE = func(cmd *cobra.Command, args []string) error {
 		if originalPreRunE != nil {
@@ -203,86 +206,143 @@ Examples:
 			}
 		}
 
-		// Get verbose flag
-		config.Verbose, _ = cmd.Flags().GetBool("verbose")
-
-		// Handle date filters
-		startDateStr, _ := cmd.Flags().GetString("start-date")
-		endDateStr, _ := cmd.Flags().GetString("end-date")
-
-		if startDateStr != "" {
-			startDate, err := time.Parse("2006-01-02", startDateStr)
-			if err != nil {
-				return fmt.Errorf("invalid start date format: %w", err)
-			}
-			config.StartDate = &startDate
-		}
-
-		if endDateStr != "" {
-			endDate, err := time.Parse("2006-01-02", endDateStr)
-			if err != nil {
-				return fmt.Errorf("invalid end date format: %w", err)
-			}
-			config.EndDate = &endDate
-		}
-
-		// Handle --use-last-command flag
-		if config.UseLastCommand {
-			if err := loadLastCommandConfig(&config, cmd, args); err != nil {
-				return fmt.Errorf("failed to load last command: %w", err)
-			}
-		}
-
-		// Handle force-overwrite flag (overrides skip-existing)
-		if forceOverwrite {
-			config.SkipExisting = false
-		}
-
-		// Get global flags
-		config.Verbose, _ = cmd.Flags().GetBool("verbose")
-
-		// Handle log level with environment variable fallback and case-insensitive matching
-		logLevel, _ := cmd.Flags().GetString("log-level")
-
-		// Check for LOG_LEVEL environment variable if flag wasn't explicitly set
-		if !cmd.Flags().Changed("log-level") {
-			if envLogLevel := os.Getenv("LOG_LEVEL"); envLogLevel != "" {
-				logLevel = envLogLevel
-			}
-		}
-
-		// Normalize log level to lowercase for case-insensitive matching
-		config.LogLevel = strings.ToLower(strings.TrimSpace(logLevel))
-
-		// Validate log level
-		validLogLevels := map[string]bool{
-			"debug": true,
-			"info":  true,
-			"warn":  true,
-			"error": true,
-		}
-		if !validLogLevels[config.LogLevel] {
-			return fmt.Errorf("invalid log level '%s'. Valid levels: debug, info, warn, error", config.LogLevel)
-		}
-
-		// Normalize and validate path granularity
-		config.PathGranularity = strings.ToLower(strings.TrimSpace(config.PathGranularity))
-		if config.PathGranularity == "" {
-			config.PathGranularity = "day"
-		}
-		validGranularity := map[string]bool{"year": true, "month": true, "day": true}
-		if !validGranularity[config.PathGranularity] {
-			return fmt.Errorf("invalid path granularity '%s'. Valid values: year, month, day", config.PathGranularity)
-		}
-
-		return nil
+		return configureSyncCommand(&config, cmd, args, forceOverwrite, startDateStr, endDateStr)
 	}
 
 	return cmd
 }
 
-// NewValidateCommand creates the validate subcommand
-func NewValidateCommand() *cobra.Command {
+// configureSyncCommand handles all the complex flag parsing and validation for the sync command
+func configureSyncCommand(config *uploader.Config, cmd *cobra.Command, args []string, forceOverwrite bool, startDateStr, endDateStr string) error {
+	// Get verbose flag
+	config.Verbose, _ = cmd.Flags().GetBool("verbose")
+
+	// Handle date filters
+	if err := parseDateFilters(config, startDateStr, endDateStr); err != nil {
+		return err
+	}
+
+	// Handle --use-last-command flag
+	if config.UseLastCommand {
+		if err := loadLastCommandConfig(config, cmd, args); err != nil {
+			return fmt.Errorf("failed to load last command: %w", err)
+		}
+	}
+
+	// Handle force-overwrite flag (overrides skip-existing)
+	if forceOverwrite {
+		config.SkipExisting = false
+	}
+
+	// Handle log level with environment variable fallback and case-insensitive matching
+	if err := configureLogLevel(config, cmd); err != nil {
+		return err
+	}
+
+	// Parse batch timeout
+	if err := configureBatchTimeout(config, cmd); err != nil {
+		return err
+	}
+
+	// Normalize and validate path granularity
+	if err := validatePathGranularity(config); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// parseDateFilters handles parsing and validation of date filter flags
+func parseDateFilters(config *uploader.Config, startDateStr, endDateStr string) error {
+	if startDateStr != "" {
+		startDate, err := time.Parse("2006-01-02", startDateStr)
+		if err != nil {
+			return fmt.Errorf("invalid start date format: %w", err)
+		}
+		config.StartDate = &startDate
+	}
+
+	if endDateStr != "" {
+		endDate, err := time.Parse("2006-01-02", endDateStr)
+		if err != nil {
+			return fmt.Errorf("invalid end date format: %w", err)
+		}
+		config.EndDate = &endDate
+	}
+
+	return nil
+}
+
+// configureLogLevel handles log level configuration with environment variable fallback
+func configureLogLevel(config *uploader.Config, cmd *cobra.Command) error {
+	logLevel, _ := cmd.Flags().GetString("log-level")
+
+	// Check for LOG_LEVEL environment variable if flag wasn't explicitly set
+	if !cmd.Flags().Changed("log-level") {
+		if envLogLevel := os.Getenv("LOG_LEVEL"); envLogLevel != "" {
+			logLevel = envLogLevel
+		}
+	}
+
+	// Validate and normalize log level
+	validLogLevels := map[string]bool{
+		"debug": true,
+		"info":  true,
+		"warn":  true,
+		"error": true,
+	}
+
+	normalizedLevel, isValid := utils.ValidateStringInSet(logLevel, validLogLevels)
+	if !isValid {
+		return fmt.Errorf("invalid log level '%s'. Valid levels: debug, info, warn, error", logLevel)
+	}
+	config.LogLevel = normalizedLevel
+
+	return nil
+}
+
+// configureBatchTimeout handles batch timeout configuration
+func configureBatchTimeout(config *uploader.Config, cmd *cobra.Command) error {
+	batchTimeoutStr, _ := cmd.Flags().GetString("batch-timeout")
+
+	if batchTimeoutStr != "" {
+		timeout, err := time.ParseDuration(batchTimeoutStr)
+		if err != nil {
+			return fmt.Errorf("invalid batch timeout '%s': %w", batchTimeoutStr, err)
+		}
+
+		// Ensure timeout is reasonable (at least 1 minute, max 24 hours)
+		if timeout < time.Minute {
+			return fmt.Errorf("batch timeout must be at least 1 minute, got %v", timeout)
+		}
+		if timeout > 24*time.Hour {
+			return fmt.Errorf("batch timeout must be at most 24 hours, got %v", timeout)
+		}
+
+		config.BatchTimeout = timeout
+	}
+
+	return nil
+}
+
+// validatePathGranularity handles path granularity normalization and validation
+func validatePathGranularity(config *uploader.Config) error {
+	normalized := utils.NormalizeString(config.PathGranularity)
+	if normalized == "" {
+		normalized = "day"
+	}
+
+	validGranularity := map[string]bool{"year": true, "month": true, "day": true}
+	if !validGranularity[normalized] {
+		return fmt.Errorf("invalid path granularity '%s'. Valid values: year, month, day", config.PathGranularity)
+	}
+
+	config.PathGranularity = normalized
+	return nil
+}
+
+// CreateValidateCommand creates the validate subcommand
+func CreateValidateCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "validate [backup-path]",
 		Short: "Validate an iPhone backup directory",
@@ -309,8 +369,8 @@ If no path is provided, checks the current working directory.`,
 	return cmd
 }
 
-// NewListCommand creates the list subcommand
-func NewListCommand() *cobra.Command {
+// CreateListCommand creates the list subcommand
+func CreateListCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list <backup-path>",
 		Short: "List assets found in an iPhone backup",
@@ -331,8 +391,8 @@ including their classification, flags, and file locations.`,
 	return cmd
 }
 
-// NewExtractCommand creates the extract subcommand
-func NewExtractCommand() *cobra.Command {
+// CreateExtractCommand creates the extract subcommand
+func CreateExtractCommand() *cobra.Command {
 	var (
 		outputPath   string
 		skipExisting bool
@@ -403,7 +463,7 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 		Logger:       log,
 	}
 
-	extractor, err := backup.NewExtractor(extractConfig)
+	extractor, err := backup.CreateExtractor(extractConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create extractor: %w", err)
 	}
@@ -419,7 +479,7 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 	if len(summary.CriticalErrors) > 0 {
 		color.Yellow("\nCritical Errors:")
 		for _, errMsg := range summary.CriticalErrors {
-			fmt.Printf("  - %s\n", errMsg)
+			log.Errorf("  - %s", errMsg)
 		}
 		fmt.Println()
 	}
@@ -432,25 +492,25 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 
 	// Display success and summary last
 	color.Green("✓ Backup extraction completed successfully!")
-	fmt.Printf("\nExtraction Summary:\n")
-	fmt.Printf("  Total files processed: %d\n", summary.TotalFiles)
-	fmt.Printf("  Files extracted: %d\n", summary.ExtractedFiles)
-	fmt.Printf("  Files skipped: %d\n", summary.SkippedFiles)
+	log.Info("\nExtraction Summary:")
+	log.Infof("  Total files processed: %d", summary.TotalFiles)
+	log.Infof("  Files extracted: %d", summary.ExtractedFiles)
+	log.Infof("  Files skipped: %d", summary.SkippedFiles)
 	if summary.FilesystemCompatErrors > 0 {
-		fmt.Printf("  Files failed (critical): %d\n", len(summary.CriticalErrors))
-		fmt.Printf("  Files skipped (filesystem): %d\n", summary.FilesystemCompatErrors)
+		log.Infof("  Files failed (critical): %d", len(summary.CriticalErrors))
+		log.Infof("  Files skipped (filesystem): %d", summary.FilesystemCompatErrors)
 	} else {
-		fmt.Printf("  Files failed: %d\n", summary.FailedFiles)
+		log.Infof("  Files failed: %d", summary.FailedFiles)
 	}
-	fmt.Printf("  Domains found: %d\n", summary.DomainsFound)
-	fmt.Printf("  Total size: %s\n", formatBytes(summary.TotalSize))
-	fmt.Printf("  Extracted size: %s\n", formatBytes(summary.ExtractedSize))
-	fmt.Printf("  Duration: %v\n", summary.Duration.Round(time.Second))
+	log.Infof("  Domains found: %d", summary.DomainsFound)
+	log.Infof("  Total size: %s", formatBytes(summary.TotalSize))
+	log.Infof("  Extracted size: %s", formatBytes(summary.ExtractedSize))
+	log.Infof("  Duration: %v", summary.Duration.Round(time.Second))
 
 	// Generate and display metadata
 	metadata := newCommandMetadata()
 	if err := metadata.setIOSBackupInfo(backupPath); err != nil {
-		fmt.Printf("Warning: Could not collect iOS backup metadata: %v\n", err)
+		log.Warnf("Could not collect iOS backup metadata: %v", err)
 	}
 
 	// Set backup file count
@@ -459,17 +519,17 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 
 	// Extract Photos.sqlite data for sync operations
 	var assets []*types.Asset
-	if parser, err := backup.NewBackupParser(backupPath, logger.New(logger.Config{Level: logger.LevelWarn, Output: os.Stderr})); err == nil {
+	if parser, err := backup.CreateBackupParser(backupPath, logger.New(logger.Config{Level: logger.LevelWarn, Output: os.Stderr})); err == nil {
 		if extractedAssets, err := parser.ParseAssetsForExtraction(); err == nil {
 			assets = extractedAssets
 			// Set asset counts for display
 			metadata.setAssetCounts(assets)
 		} else {
-			fmt.Printf("Warning: Could not extract Photos.sqlite data: %v\n", err)
+			log.Warnf("Could not extract Photos.sqlite data: %v", err)
 		}
 		parser.Close()
 	} else {
-		fmt.Printf("Warning: Could not access Photos.sqlite for metadata: %v\n", err)
+		log.Warnf("Could not access Photos.sqlite for metadata: %v", err)
 	}
 
 	// Display metadata summary (with asset counts for extract command since we have them now)
@@ -483,12 +543,12 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 
 	manifestPath := filepath.Join(outputPath, "extraction-metadata.json")
 	if err := saveExtractionMetadata(extractionMetadata, manifestPath); err != nil {
-		fmt.Printf("Warning: Could not save metadata to %s: %v\n", manifestPath, err)
+		log.Warnf("Could not save metadata to %s: %v", manifestPath, err)
 	} else {
-		fmt.Printf("\n💾 Metadata saved to: %s\n", manifestPath)
+		log.Infof("\n💾 Metadata saved to: %s", manifestPath)
 	}
 
-	fmt.Printf("\nExtracted backup is available at: %s\n", outputPath)
+	log.Infof("\nExtracted backup is available at: %s", outputPath)
 
 	// Display helpful next step suggestion
 	displaySyncSuggestion(outputPath)
@@ -529,6 +589,8 @@ func (m *CommandMetadata) setIOSBackupInfo(backupPath string) error {
 	// Extract device information from backup files
 	if err := m.extractDeviceInfo(backupPath); err != nil {
 		// Log warning but don't fail - device info is optional
+		// Note: This is in setIOSBackupInfo method, so we can't use log here directly
+		// The caller should handle logging appropriately
 		fmt.Printf("Warning: Could not extract device info: %v\n", err)
 	}
 
@@ -860,7 +922,7 @@ func getAssetsFromBackup(backupPath string) []*types.Asset {
 	}
 	log := logger.New(loggerConfig)
 
-	parser, err := backup.NewBackupParser(backupPath, log)
+	parser, err := backup.CreateBackupParser(backupPath, log)
 	if err != nil {
 		return nil
 	}
@@ -914,7 +976,7 @@ func runSync(ctx context.Context, config uploader.Config) error {
 	}
 
 	// Create uploader
-	ul, err := uploader.NewUploader(config)
+	ul, err := uploader.CreateUploader(config)
 	if err != nil {
 		return fmt.Errorf("failed to create uploader: %w", err)
 	}

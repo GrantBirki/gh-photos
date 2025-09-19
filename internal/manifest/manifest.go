@@ -81,8 +81,8 @@ type Generator struct {
 	config       Config
 }
 
-// NewGenerator creates a new manifest generator
-func NewGenerator(backupPath, remoteTarget string, config Config) *Generator {
+// CreateGenerator creates a new manifest generator
+func CreateGenerator(backupPath, remoteTarget string, config Config) *Generator {
 	return &Generator{
 		backupPath:   backupPath,
 		remoteTarget: remoteTarget,

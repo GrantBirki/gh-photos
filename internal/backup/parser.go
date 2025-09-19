@@ -10,6 +10,7 @@ import (
 	"github.com/grantbirki/gh-photos/internal/logger"
 	"github.com/grantbirki/gh-photos/internal/photos"
 	"github.com/grantbirki/gh-photos/internal/types"
+	"github.com/grantbirki/gh-photos/internal/utils"
 )
 
 // BackupParser handles parsing of iPhone backup directories
@@ -20,10 +21,13 @@ type BackupParser struct {
 	manifestPath    string
 	isExtracted     bool
 	extractedAssets []*types.Asset
+	logger          *logger.Logger
+	paths           *utils.BackupPaths
 }
 
-// NewBackupParser creates a new backup parser for the given backup directory
-func NewBackupParser(backupPath string, logger *logger.Logger) (*BackupParser, error) {
+// CreateBackupParser creates a new backup parser for the given backup path.
+// It will automatically detect if the backup is extracted or not.
+func CreateBackupParser(backupPath string, logger *logger.Logger) (*BackupParser, error) {
 	// Resolve the backup path using smart directory walking
 	resolvedPath, err := resolveBackupPath(backupPath)
 	if err != nil {
@@ -35,11 +39,13 @@ func NewBackupParser(backupPath string, logger *logger.Logger) (*BackupParser, e
 		return nil, fmt.Errorf("invalid backup directory: %w", err)
 	}
 
+	// Initialize path utilities
+	pathUtils := utils.CreateBackupPaths(backupPath)
+
 	// Check if this is an extracted directory
-	extractionMetadataPath := filepath.Join(backupPath, "extraction-metadata.json")
-	if _, err := os.Stat(extractionMetadataPath); err == nil {
+	if _, err := os.Stat(pathUtils.ExtractionMetadata()); err == nil {
 		// This is an extracted directory - create a parser that works with metadata
-		return NewExtractedBackupParser(backupPath, extractionMetadataPath)
+		return CreateExtractedBackupParser(backupPath, pathUtils.ExtractionMetadata(), logger)
 	}
 
 	// This is an original backup directory - use traditional parsing
@@ -50,7 +56,7 @@ func NewBackupParser(backupPath string, logger *logger.Logger) (*BackupParser, e
 	}
 
 	// Open the Photos database
-	photosDB, err := photos.NewDatabase(photosDBPath, logger)
+	photosDB, err := photos.CreateDatabase(photosDBPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Photos database: %w", err)
 	}
@@ -62,19 +68,22 @@ func NewBackupParser(backupPath string, logger *logger.Logger) (*BackupParser, e
 		return nil, fmt.Errorf("failed to find DCIM directory: %w", err)
 	}
 
-	manifestPath := filepath.Join(backupPath, "Manifest.plist")
-
 	return &BackupParser{
 		backupPath:   backupPath,
 		photosDB:     photosDB,
 		dcimPath:     dcimPath,
-		manifestPath: manifestPath,
+		manifestPath: pathUtils.ManifestPlist(),
 		isExtracted:  false,
+		logger:       logger,
+		paths:        pathUtils,
 	}, nil
 }
 
-// NewExtractedBackupParser creates a backup parser for extracted directories
-func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, error) {
+// CreateExtractedBackupParser creates a backup parser for extracted directories
+func CreateExtractedBackupParser(backupPath, metadataPath string, logger *logger.Logger) (*BackupParser, error) {
+	// Initialize path utilities
+	pathUtils := utils.CreateBackupPaths(backupPath)
+
 	// Read extraction metadata
 	data, err := os.ReadFile(metadataPath)
 	if err != nil {
@@ -91,13 +100,13 @@ func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, e
 	// Find available domains in the extracted directory
 	mediaDomain := findMediaDomain(backupPath)
 
-	fmt.Printf("Detected extracted backup directory (%s). Preparing fast path index...\n", mediaDomain)
+	logger.Infof("Detected extracted backup directory (%s). Preparing fast path index...", mediaDomain)
 
 	// Index DCIM and related media files once to avoid O(N^2) directory walking per asset
 	dcimRoots := []string{
-		filepath.Join(backupPath, mediaDomain, "Media", "DCIM"),
-		filepath.Join(backupPath, mediaDomain, "DCIM"),
-		filepath.Join(backupPath, mediaDomain, "Media", "PhotoData"), // occasionally holds media
+		pathUtils.MediaDCIM(mediaDomain),
+		pathUtils.DCIM(mediaDomain),
+		pathUtils.MediaPhotoData(mediaDomain), // occasionally holds media
 	}
 
 	indexByFilename := make(map[string][]string)
@@ -125,13 +134,13 @@ func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, e
 				indexedFiles++
 				fileCount++
 				if fileCount%2000 == 0 {
-					fmt.Printf("Indexed %d files so far in %s...\n", fileCount, root)
+					logger.Debugf("Indexed %d files so far in %s...", fileCount, root)
 				}
 				return nil
 			})
 		}
 	}
-	fmt.Printf("Indexing complete. %d media files indexed for fast lookup. Resolving asset paths...\n", indexedFiles)
+	logger.Infof("Indexing complete. %d media files indexed for fast lookup. Resolving asset paths...", indexedFiles)
 
 	// Update asset source paths to point to extracted files using the index
 	missingResolutions := 0
@@ -141,7 +150,7 @@ func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, e
 
 		// Quick progress feedback every 5k assets to assure user on large sets
 		if (i+1)%5000 == 0 {
-			fmt.Printf("Resolved %d/%d assets (%.1f%%)\n", i+1, len(extractionMetadata.Assets), float64(i+1)/float64(len(extractionMetadata.Assets))*100)
+			logger.Debugf("Resolved %d/%d assets (%.1f%%)", i+1, len(extractionMetadata.Assets), float64(i+1)/float64(len(extractionMetadata.Assets))*100)
 		}
 
 		if strings.Contains(cleanPath, "DCIM") {
@@ -160,28 +169,30 @@ func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, e
 			}
 			missingResolutions++
 			// Final fallback guess under primary DCIM root
-			asset.SourcePath = filepath.Join(backupPath, mediaDomain, "Media", "DCIM", asset.Filename)
+			asset.SourcePath = pathUtils.MediaDCIMFile(mediaDomain, asset.Filename)
 		} else {
 			// Non-DCIM assets: try Media directory then domain root
-			mediaPath := filepath.Join(backupPath, mediaDomain, "Media", asset.Filename)
+			mediaPath := pathUtils.MediaFile(mediaDomain, asset.Filename)
 			if _, err := os.Stat(mediaPath); err == nil {
 				asset.SourcePath = mediaPath
 			} else {
-				asset.SourcePath = filepath.Join(backupPath, mediaDomain, asset.Filename)
+				asset.SourcePath = pathUtils.DomainFile(mediaDomain, asset.Filename)
 			}
 		}
 	}
 
 	if missingResolutions > 0 {
-		fmt.Printf("Warning: %d assets could not be precisely resolved via index; using fallback paths.\n", missingResolutions)
+		logger.Warnf("Warning: %d assets could not be precisely resolved via index; using fallback paths.", missingResolutions)
 	}
-	fmt.Printf("Asset path resolution complete. Proceeding with %d assets.\n", len(extractionMetadata.Assets))
+	logger.Infof("Asset path resolution complete. Proceeding with %d assets.", len(extractionMetadata.Assets))
 
 	return &BackupParser{
 		backupPath:      backupPath,
 		dcimPath:        backupPath,
 		isExtracted:     true,
 		extractedAssets: extractionMetadata.Assets,
+		logger:          logger,
+		paths:           pathUtils,
 	}, nil
 }
 
@@ -197,13 +208,13 @@ func (bp *BackupParser) Close() error {
 func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 	if bp.isExtracted {
 		// For extracted directories, return pre-loaded assets from metadata
-		fmt.Printf("Processing %d extracted assets...\n", len(bp.extractedAssets))
+		bp.logger.Infof("Processing %d extracted assets...", len(bp.extractedAssets))
 		var validAssets []*types.Asset
 		processed := 0
 		for _, asset := range bp.extractedAssets {
 			processed++
 			if processed%100 == 0 || processed == len(bp.extractedAssets) {
-				fmt.Printf("Asset processing progress: %d/%d (%.1f%%)\n", processed, len(bp.extractedAssets), float64(processed)/float64(len(bp.extractedAssets))*100)
+				bp.logger.Debugf("Asset processing progress: %d/%d (%.1f%%)", processed, len(bp.extractedAssets), float64(processed)/float64(len(bp.extractedAssets))*100)
 			}
 			if err := bp.enrichAsset(asset); err != nil {
 				// Check if this might be in a derivatives or ignored directory
@@ -214,22 +225,22 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 					continue
 				}
 				// Log warning but continue processing for other files
-				fmt.Fprintf(os.Stderr, "Warning: failed to enrich asset %s: %v\n", asset.Filename, err)
+				bp.logger.Warnf("Failed to enrich asset %s: %v", asset.Filename, err)
 				continue
 			}
 			if asset.IsValid() {
 				validAssets = append(validAssets, asset)
 			}
 		}
-		fmt.Printf("Asset processing completed. %d valid assets ready for upload.\n", len(validAssets))
+		bp.logger.Infof("Asset processing completed. %d valid assets ready for upload.", len(validAssets))
 		return validAssets, nil
 	} // For original backup directories, use Photos database
-	fmt.Printf("Querying Photos database...\n")
+	bp.logger.Info("Querying Photos database...")
 	assets, err := bp.photosDB.GetAssets(bp.dcimPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get assets from database: %w", err)
 	}
-	fmt.Printf("Found %d assets in Photos database, enriching with file information...\n", len(assets))
+	bp.logger.Infof("Found %d assets in Photos database, enriching with file information...", len(assets))
 
 	// Validate and enrich assets with file information
 	var validAssets []*types.Asset
@@ -237,7 +248,7 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 	for _, asset := range assets {
 		processed++
 		if processed%100 == 0 || processed == len(assets) {
-			fmt.Printf("Asset enrichment progress: %d/%d (%.1f%%)\n", processed, len(assets), float64(processed)/float64(len(assets))*100)
+			bp.logger.Debugf("Asset enrichment progress: %d/%d (%.1f%%)", processed, len(assets), float64(processed)/float64(len(assets))*100)
 		}
 		if err := bp.enrichAsset(asset); err != nil {
 			// Check if this might be in a derivatives or ignored directory
@@ -248,7 +259,7 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 				continue
 			}
 			// Log warning but continue processing for other files
-			fmt.Fprintf(os.Stderr, "Warning: failed to enrich asset %s: %v\n", asset.Filename, err)
+			bp.logger.Warnf("Failed to enrich asset %s: %v", asset.Filename, err)
 			continue
 		}
 
@@ -257,7 +268,7 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 		}
 	}
 
-	fmt.Printf("Asset enrichment completed. %d valid assets ready for upload.\n", len(validAssets))
+	bp.logger.Infof("Asset enrichment completed. %d valid assets ready for upload.", len(validAssets))
 	return validAssets, nil
 }
 

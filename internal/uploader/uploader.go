@@ -39,6 +39,7 @@ type Config struct {
 	Verbose                bool
 	SaveAuditManifest      string
 	UseLastCommand         bool
+	BatchTimeout           time.Duration
 }
 
 // Uploader orchestrates the photo backup process
@@ -53,8 +54,8 @@ type Uploader struct {
 	uploadStartTime time.Time      // Track upload start time for ETA calculations
 }
 
-// NewUploader creates a new uploader instance
-func NewUploader(config Config) (*Uploader, error) {
+// CreateUploader creates a new uploader instance
+func CreateUploader(config Config) (*Uploader, error) {
 	// Setup logger
 	logLevel := logger.LevelInfo
 	if config.LogLevel == "debug" || config.Verbose {
@@ -83,13 +84,13 @@ func NewUploader(config Config) (*Uploader, error) {
 	}
 
 	// Create backup parser
-	parser, err := backup.NewBackupParser(config.BackupPath, logger)
+	parser, err := backup.CreateBackupParser(config.BackupPath, logger)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create backup parser: %w", err)
 	}
 
 	// Create rclone client
-	rcloneClient := rclone.NewClient(
+	rcloneClient := rclone.CreateClient(
 		config.Remote,
 		config.Parallel,
 		config.Verify,
@@ -102,8 +103,13 @@ func NewUploader(config Config) (*Uploader, error) {
 	// Set backup path for metadata file discovery
 	rcloneClient.SetBackupPath(config.BackupPath)
 
+	// Set batch timeout if configured
+	if config.BatchTimeout > 0 {
+		rcloneClient.SetBatchTimeout(config.BatchTimeout)
+	}
+
 	// Create audit trail manager
-	auditTrail, err := audit.NewTrailManager(version.String())
+	auditTrail, err := audit.CreateTrailManager(version.String())
 	if err != nil {
 		return nil, fmt.Errorf("failed to create audit trail manager: %w", err)
 	}
@@ -129,6 +135,40 @@ func (u *Uploader) Close() error {
 func (u *Uploader) Execute(ctx context.Context) error {
 	startTime := time.Now()
 
+	// Setup execution
+	if err := u.setupExecution(); err != nil {
+		return err
+	}
+
+	// Parse and filter assets
+	assets, err := u.parseAndFilterAssets()
+	if err != nil {
+		return err
+	}
+
+	if len(u.filteredAssets) == 0 {
+		u.logInfo("No assets to process. Exiting.")
+		return nil
+	}
+
+	// Create manifest and upload plan
+	plan, err := u.createManifestAndPlan(ctx, assets)
+	if err != nil {
+		return err
+	}
+
+	// Execute uploads
+	if err := u.executeUploads(ctx, plan); err != nil {
+		return err
+	}
+
+	// Finalize execution
+	duration := time.Since(startTime)
+	return u.finalizeExecution(duration)
+}
+
+// setupExecution handles initial setup and audit trail configuration
+func (u *Uploader) setupExecution() error {
 	u.logInfo("Starting iPhone photo backup process...")
 	u.logInfo("Backup path: %s", u.config.BackupPath)
 	u.logInfo("Remote target: %s", u.config.Remote)
@@ -138,12 +178,17 @@ func (u *Uploader) Execute(ctx context.Context) error {
 		return fmt.Errorf("failed to setup audit trail: %w", err)
 	}
 
+	return nil
+}
+
+// parseAndFilterAssets handles asset parsing and filtering
+func (u *Uploader) parseAndFilterAssets() ([]*types.Asset, error) {
 	// Parse assets from backup
 	u.logInfo("Parsing assets from backup...")
 	parseStartTime := time.Now()
 	assets, err := u.parser.ParseAssets()
 	if err != nil {
-		return fmt.Errorf("failed to parse assets: %w", err)
+		return nil, fmt.Errorf("failed to parse assets: %w", err)
 	}
 	parseDuration := time.Since(parseStartTime)
 	u.logInfo("Asset parsing completed in %v", parseDuration.Round(time.Millisecond))
@@ -153,19 +198,19 @@ func (u *Uploader) Execute(ctx context.Context) error {
 	u.filteredAssets = u.filterAssets(assets)
 	u.logInfo("After filtering: %d assets to process", len(u.filteredAssets))
 
-	if len(u.filteredAssets) == 0 {
-		u.logInfo("No assets to process. Exiting.")
-		return nil
-	}
-
 	// Compute checksums if requested
 	if u.config.ComputeChecksums {
 		u.logInfo("Computing checksums...")
 		if err := u.computeChecksums(u.filteredAssets); err != nil {
-			return fmt.Errorf("failed to compute checksums: %w", err)
+			return nil, fmt.Errorf("failed to compute checksums: %w", err)
 		}
 	}
 
+	return assets, nil
+}
+
+// createManifestAndPlan creates the manifest and upload plan
+func (u *Uploader) createManifestAndPlan(ctx context.Context, assets []*types.Asset) ([]rclone.UploadPlanEntry, error) {
 	// Create manifest
 	manifestConfig := manifest.Config{
 		IncludeHidden:          u.config.IncludeHidden,
@@ -180,14 +225,14 @@ func (u *Uploader) Execute(ctx context.Context) error {
 		PathGranularity:        u.config.PathGranularity,
 	}
 
-	generator := manifest.NewGenerator(u.config.BackupPath, u.config.Remote, manifestConfig)
+	generator := manifest.CreateGenerator(u.config.BackupPath, u.config.Remote, manifestConfig)
 	u.manifest = generator.CreateManifest(u.filteredAssets)
 
 	// Create upload plan
 	u.logInfo("Creating upload plan...")
 	plan, err := u.rcloneClient.CreateUploadPlan(ctx, u.manifest.Entries)
 	if err != nil {
-		return fmt.Errorf("failed to create upload plan: %w", err)
+		return nil, fmt.Errorf("failed to create upload plan: %w", err)
 	}
 
 	// Display plan
@@ -195,6 +240,11 @@ func (u *Uploader) Execute(ctx context.Context) error {
 		rclone.PrintUploadPlan(plan)
 	}
 
+	return plan, nil
+}
+
+// executeUploads handles the upload execution process
+func (u *Uploader) executeUploads(ctx context.Context, plan []rclone.UploadPlanEntry) error {
 	// Execute uploads if not dry run
 	if !u.config.DryRun {
 		// Run startup connectivity tests before uploads
@@ -244,8 +294,12 @@ func (u *Uploader) Execute(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+// finalizeExecution handles summary, manifest saving, and audit trail finalization
+func (u *Uploader) finalizeExecution(duration time.Duration) error {
 	// Update manifest summary
-	duration := time.Since(startTime)
 	u.manifest.Summary.DurationSeconds = int64(duration.Seconds())
 
 	// Save manifest if requested

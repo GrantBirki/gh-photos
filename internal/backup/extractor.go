@@ -44,8 +44,8 @@ type Extractor struct {
 	summary  ExtractSummary
 }
 
-// NewExtractor creates a new backup extractor
-func NewExtractor(config ExtractConfig) (*Extractor, error) {
+// CreateExtractor creates a new backup extractor
+func CreateExtractor(config ExtractConfig) (*Extractor, error) {
 	// Validate backup path
 	if err := validateBackupDirectory(config.BackupPath); err != nil {
 		return nil, fmt.Errorf("invalid backup directory: %w", err)
