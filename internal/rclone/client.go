@@ -205,12 +205,19 @@ func (c *Client) logTempDirStructure(tempDir string) {
 			c.logDebug("temp dir structure", "type", "directory", "path", relPath)
 		} else {
 			linkType := "unknown"
+			actualSize := info.Size()
+
 			if info.Mode()&os.ModeSymlink != 0 {
 				linkType = "symlink"
+				// For symlinks, get the actual target file size
+				if targetInfo, err := os.Stat(path); err == nil {
+					actualSize = targetInfo.Size()
+				}
 			} else if info.Mode().IsRegular() {
 				linkType = "regular_file"
 			}
-			c.logDebug("temp dir structure", "type", "file", "path", relPath, "size", info.Size(), "link_type", linkType)
+
+			c.logDebug("temp dir structure", "type", "file", "path", relPath, "size", actualSize, "link_type", linkType, "symlink_size", info.Size())
 		}
 
 		return nil
@@ -581,6 +588,9 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			args = append(args, "--check-first")
 		}
 
+		// Add symlink following for Windows compatibility
+		args = append(args, "--copy-links")
+
 		// Add progress reporting
 		args = append(args, "--progress", "--stats-one-line")
 
@@ -706,7 +716,106 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			return fmt.Errorf("rclone batch upload failed: %w", err)
 		}
 
+		// Always log stderr output even on success to catch warnings
+		if stderrOutput := stderrBuf.String(); stderrOutput != "" {
+			c.logDebug("rclone stderr output (success case)", "stderr", stderrOutput)
+		}
+
 		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())
+
+		// Post-upload verification: Check if files actually appeared on remote
+		if c.logLevel == "debug" {
+			c.logDebug("=== POST-UPLOAD VERIFICATION ===")
+			// Check if at least one file from this batch exists on remote
+			if len(groupEntries) > 0 {
+				testEntry := groupEntries[0]
+				normalizedTestPath := strings.ReplaceAll(testEntry.TargetPath, "\\", "/")
+				expectedRemotePath := c.buildRemotePath(normalizedTestPath)
+
+				// Try to list the file to see if it exists
+				verifyCmd := exec.CommandContext(ctx, "rclone", "lsf", expectedRemotePath)
+				setupRcloneCmd(verifyCmd)
+
+				var verifyStdout, verifyStderr bytes.Buffer
+				verifyCmd.Stdout = &verifyStdout
+				verifyCmd.Stderr = &verifyStderr
+
+				verifyErr := verifyCmd.Run()
+				if verifyErr != nil {
+					c.logError("post-upload verification failed",
+						"error", verifyErr,
+						"expected_path", expectedRemotePath,
+						"verify_stderr", verifyStderr.String())
+				} else {
+					verifyOutput := strings.TrimSpace(verifyStdout.String())
+					if verifyOutput == "" {
+						c.logError("post-upload verification: file not found on remote",
+							"expected_path", expectedRemotePath)
+					} else {
+						c.logDebug("post-upload verification successful",
+							"expected_path", expectedRemotePath,
+							"found_file", verifyOutput)
+					}
+				}
+			}
+
+			// Also try listing the target directory to see what's actually there
+			targetDirNormalized := strings.ReplaceAll(targetDir, "\\", "/")
+			if targetDirNormalized != "" {
+				remoteDirPath := c.buildRemotePath(targetDirNormalized)
+				c.logDebug("checking target directory contents", "remote_dir", remoteDirPath)
+
+				listCmd := exec.CommandContext(ctx, "rclone", "lsf", remoteDirPath)
+				setupRcloneCmd(listCmd)
+
+				var listStdout, listStderr bytes.Buffer
+				listCmd.Stdout = &listStdout
+				listCmd.Stderr = &listStderr
+
+				listErr := listCmd.Run()
+				if listErr != nil {
+					c.logError("target directory listing failed",
+						"error", listErr,
+						"remote_dir", remoteDirPath,
+						"list_stderr", listStderr.String())
+				} else {
+					dirContents := strings.TrimSpace(listStdout.String())
+					if dirContents == "" {
+						c.logError("target directory is empty after upload", "remote_dir", remoteDirPath)
+					} else {
+						c.logDebug("target directory contents",
+							"remote_dir", remoteDirPath,
+							"contents", dirContents)
+					}
+				}
+			}
+
+			// Check what's in the base remote directory
+			baseRemotePath := c.buildRemotePath("")
+			c.logDebug("checking base remote directory contents", "base_remote", baseRemotePath)
+
+			baseListCmd := exec.CommandContext(ctx, "rclone", "lsf", baseRemotePath, "-R", "--max-depth", "3")
+			setupRcloneCmd(baseListCmd)
+
+			var baseListStdout, baseListStderr bytes.Buffer
+			baseListCmd.Stdout = &baseListStdout
+			baseListCmd.Stderr = &baseListStderr
+
+			baseListErr := baseListCmd.Run()
+			if baseListErr != nil {
+				c.logError("base remote directory listing failed",
+					"error", baseListErr,
+					"base_remote", baseRemotePath,
+					"list_stderr", baseListStderr.String())
+			} else {
+				baseContents := strings.TrimSpace(baseListStdout.String())
+				c.logDebug("base remote directory contents",
+					"base_remote", baseRemotePath,
+					"contents", baseContents)
+			}
+
+			c.logDebug("=== END POST-UPLOAD VERIFICATION ===")
+		}
 
 		// Mark all entries in this batch as successful
 		for _, entry := range groupEntries {
