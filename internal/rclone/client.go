@@ -25,6 +25,73 @@ type Client struct {
 	logLevel      string
 }
 
+// buildRemotePath safely constructs a remote destination path ensuring only one colon
+// between remote name and path, normalizing slashes and removing duplicate separators.
+func (c *Client) buildRemotePath(subPath string) string {
+	spec := c.remote
+	remoteName := spec
+	basePath := ""
+	if idx := strings.Index(spec, ":"); idx != -1 { // remote contains embedded path
+		remoteName = spec[:idx]
+		basePath = spec[idx+1:]
+	}
+
+	hadLeadingSlash := strings.HasPrefix(basePath, "/")
+
+	normalizeBase := func(p string) string {
+		p = strings.ReplaceAll(p, "\\", "/")
+		// collapse duplicate slashes
+		for strings.Contains(p, "//") {
+			p = strings.ReplaceAll(p, "//", "/")
+		}
+		// preserve single leading slash if originally absolute
+		if strings.HasPrefix(p, "/") {
+			// trim trailing slash (except root)
+			if len(p) > 1 {
+				p = strings.TrimSuffix(p, "/")
+			}
+			return p
+		}
+		// relative path: trim leading/trailing slashes
+		p = strings.Trim(p, "/")
+		return p
+	}
+	normalizeSub := func(p string) string {
+		p = strings.ReplaceAll(p, "\\", "/")
+		for strings.Contains(p, "//") {
+			p = strings.ReplaceAll(p, "//", "/")
+		}
+		p = strings.Trim(p, "/")
+		return p
+	}
+
+	basePath = normalizeBase(basePath)
+	subPath = normalizeSub(subPath)
+
+	// Restore leading slash if original spec indicated absolute path (e.g., sftp:/absolute/path)
+	if hadLeadingSlash && basePath != "" && !strings.HasPrefix(basePath, "/") {
+		basePath = "/" + basePath
+	}
+
+	var joined string
+	switch {
+	case basePath == "" && subPath == "":
+		joined = ""
+	case basePath != "" && subPath == "":
+		joined = basePath
+	case basePath == "" && subPath != "":
+		joined = subPath
+	default:
+		// If base is absolute (starts with /), don't double the slash when joining
+		if strings.HasPrefix(basePath, "/") {
+			joined = basePath + "/" + subPath
+		} else {
+			joined = basePath + "/" + subPath
+		}
+	}
+	return remoteName + ":" + joined
+}
+
 // helper logging methods to avoid nil checks everywhere
 func (c *Client) logDebug(msg string, args ...any) {
 	if c != nil && c.logger != nil {
@@ -110,7 +177,8 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	args = append(args, entry.SourcePath)
 	// Normalize to forward slashes for remote destinations; rclone tolerates but we keep consistent
 	normalized := strings.ReplaceAll(entry.TargetPath, "\\", "/")
-	args = append(args, fmt.Sprintf("%s:%s", c.remote, normalized))
+	dest := c.buildRemotePath(normalized)
+	args = append(args, dest)
 
 	c.logDebug("starting single file upload",
 		"source", entry.SourcePath,
@@ -242,7 +310,8 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 
 		// Build rclone command for batch upload
-		args := []string{"copy", tempDir, fmt.Sprintf("%s:%s", c.remote, normalizedDir)}
+		dest := c.buildRemotePath(normalizedDir)
+		args := []string{"copy", tempDir, dest}
 
 		if c.skipExisting {
 			args = append(args, "--ignore-existing")
