@@ -91,52 +91,91 @@ func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, e
 	// Find available domains in the extracted directory
 	mediaDomain := findMediaDomain(backupPath)
 
-	// Update asset source paths to point to extracted files
-	for _, asset := range extractionMetadata.Assets {
-		// The extracted structure organizes files by domain, e.g.:
-		// CameraRollDomain/Media/DCIM/100APPLE/IMG_001.HEIC
-		// We need to reconstruct the full path from original SourcePath
+	fmt.Printf("Detected extracted backup directory (%s). Preparing fast path index...\n", mediaDomain)
 
-		// Clean the path and handle both forward and backward slashes
+	// Index DCIM and related media files once to avoid O(N^2) directory walking per asset
+	dcimRoots := []string{
+		filepath.Join(backupPath, mediaDomain, "Media", "DCIM"),
+		filepath.Join(backupPath, mediaDomain, "DCIM"),
+		filepath.Join(backupPath, mediaDomain, "Media", "PhotoData"), // occasionally holds media
+	}
+
+	indexByFilename := make(map[string][]string)
+	indexByRelPath := make(map[string]string) // key: path after DCIM/ e.g. 100APPLE/IMG_0001.HEIC
+	indexedFiles := 0
+
+	for _, root := range dcimRoots {
+		if info, err := os.Stat(root); err == nil && info.IsDir() {
+			fileCount := 0
+			_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+				if err != nil {
+					return nil
+				}
+				if d.IsDir() {
+					return nil
+				}
+				filename := d.Name()
+				indexByFilename[filename] = append(indexByFilename[filename], path)
+				// Build relative path after the first "DCIM" segment if present
+				slashPath := filepath.ToSlash(path)
+				if idx := strings.Index(slashPath, "/DCIM/"); idx != -1 {
+					rel := slashPath[idx+len("/DCIM/"):]
+					indexByRelPath[rel] = path
+				}
+				indexedFiles++
+				fileCount++
+				if fileCount%2000 == 0 {
+					fmt.Printf("Indexed %d files so far in %s...\n", fileCount, root)
+				}
+				return nil
+			})
+		}
+	}
+	fmt.Printf("Indexing complete. %d media files indexed for fast lookup. Resolving asset paths...\n", indexedFiles)
+
+	// Update asset source paths to point to extracted files using the index
+	missingResolutions := 0
+	for i, asset := range extractionMetadata.Assets {
+		// Normalize original stored SourcePath (may refer to original pre-extraction structure)
 		cleanPath := filepath.ToSlash(asset.SourcePath)
 
+		// Quick progress feedback every 5k assets to assure user on large sets
+		if (i+1)%5000 == 0 {
+			fmt.Printf("Resolved %d/%d assets (%.1f%%)\n", i+1, len(extractionMetadata.Assets), float64(i+1)/float64(len(extractionMetadata.Assets))*100)
+		}
+
 		if strings.Contains(cleanPath, "DCIM") {
-			// For DCIM files, use the media domain we found
-			// Look for the filename in the DCIM directory structure
-			foundPath := findFileInDCIM(backupPath, mediaDomain, asset.Filename)
-			if foundPath != "" {
-				asset.SourcePath = foundPath
-			} else {
-				// Fallback: try to reconstruct from original path structure
-				parts := strings.Split(cleanPath, "/")
-				var dcimIndex int = -1
-				for i, part := range parts {
-					if part == "DCIM" {
-						dcimIndex = i
-						break
-					}
-				}
-				if dcimIndex >= 0 {
-					// Reconstruct path using found media domain
-					relativePath := filepath.Join(parts[dcimIndex:]...)
-					asset.SourcePath = filepath.Join(backupPath, mediaDomain, "Media", relativePath)
-				} else {
-					// Final fallback: assume it's in the media domain
-					asset.SourcePath = filepath.Join(backupPath, mediaDomain, "Media", "DCIM", asset.Filename)
+			// Prefer relative path match if we can extract segment after DCIM/
+			if idx := strings.Index(cleanPath, "DCIM/"); idx != -1 {
+				rel := cleanPath[idx+len("DCIM/"):]
+				if full, ok := indexByRelPath[rel]; ok {
+					asset.SourcePath = full
+					continue
 				}
 			}
+			// Fallback to filename-only match (choose first occurrence)
+			if paths, ok := indexByFilename[asset.Filename]; ok && len(paths) > 0 {
+				asset.SourcePath = paths[0]
+				continue
+			}
+			missingResolutions++
+			// Final fallback guess under primary DCIM root
+			asset.SourcePath = filepath.Join(backupPath, mediaDomain, "Media", "DCIM", asset.Filename)
 		} else {
-			// For non-DCIM files, try to find them in the media domain
-			// First try in Media directory
+			// Non-DCIM assets: try Media directory then domain root
 			mediaPath := filepath.Join(backupPath, mediaDomain, "Media", asset.Filename)
 			if _, err := os.Stat(mediaPath); err == nil {
 				asset.SourcePath = mediaPath
 			} else {
-				// Fallback to domain root
 				asset.SourcePath = filepath.Join(backupPath, mediaDomain, asset.Filename)
 			}
 		}
 	}
+
+	if missingResolutions > 0 {
+		fmt.Printf("Warning: %d assets could not be precisely resolved via index; using fallback paths.\n", missingResolutions)
+	}
+	fmt.Printf("Asset path resolution complete. Proceeding with %d assets.\n", len(extractionMetadata.Assets))
 
 	return &BackupParser{
 		backupPath:      backupPath,
