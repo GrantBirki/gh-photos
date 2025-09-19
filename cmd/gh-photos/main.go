@@ -422,7 +422,7 @@ func runExtract(backupPath, outputPath string, skipExisting, verify, progress bo
 	// Extract Photos.sqlite data for sync operations
 	var assets []*types.Asset
 	if parser, err := backup.NewBackupParser(backupPath, logger.New(logger.Config{Level: logger.LevelWarn, Output: os.Stderr})); err == nil {
-		if extractedAssets, err := parser.ParseAssets(); err == nil {
+		if extractedAssets, err := parser.ParseAssetsForExtraction(); err == nil {
 			assets = extractedAssets
 			// Set asset counts for display
 			metadata.setAssetCounts(assets)

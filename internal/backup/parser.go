@@ -93,27 +93,33 @@ func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, e
 		// The extracted structure organizes files by domain, e.g.:
 		// MediaDomain/DCIM/100APPLE/IMG_001.HEIC
 		// We need to reconstruct the full path from original SourcePath
-		if strings.Contains(asset.SourcePath, "DCIM") {
+
+		// Clean the path and handle both forward and backward slashes
+		cleanPath := filepath.ToSlash(asset.SourcePath)
+
+		if strings.Contains(cleanPath, "DCIM") {
 			// Extract the DCIM path portion
-			parts := strings.Split(asset.SourcePath, "/")
-			var dcimIndex int
+			parts := strings.Split(cleanPath, "/")
+			var dcimIndex int = -1
 			for i, part := range parts {
 				if part == "DCIM" {
 					dcimIndex = i
 					break
 				}
 			}
-			if dcimIndex > 0 {
+			if dcimIndex >= 0 {
 				// Reconstruct path: backupPath/MediaDomain/DCIM/folder/filename
 				relativePath := filepath.Join(parts[dcimIndex:]...)
 				asset.SourcePath = filepath.Join(backupPath, "MediaDomain", relativePath)
 			} else {
-				// Fallback: assume it's in MediaDomain/DCIM
+				// Fallback: assume it's in MediaDomain/DCIM with filename
 				asset.SourcePath = filepath.Join(backupPath, "MediaDomain", "DCIM", asset.Filename)
 			}
 		} else {
-			// For non-DCIM files, place in appropriate domain
-			asset.SourcePath = filepath.Join(backupPath, "MediaDomain", asset.Filename)
+			// For non-DCIM files, use the original relative path structure
+			// Remove any leading domain parts and place under MediaDomain
+			cleanedPath := strings.TrimPrefix(cleanPath, "MediaDomain/")
+			asset.SourcePath = filepath.Join(backupPath, "MediaDomain", cleanedPath)
 		}
 	}
 
@@ -173,6 +179,24 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 	}
 
 	return validAssets, nil
+}
+
+// ParseAssetsForExtraction extracts assets without enrichment (for use during extraction process)
+func (bp *BackupParser) ParseAssetsForExtraction() ([]*types.Asset, error) {
+	if bp.isExtracted {
+		// For extracted directories, return pre-loaded assets from metadata
+		return bp.extractedAssets, nil
+	}
+
+	// For original backup directories, use Photos database but skip enrichment
+	assets, err := bp.photosDB.GetAssets(bp.dcimPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get assets from database: %w", err)
+	}
+
+	// Return assets without enrichment since files are being extracted
+	// The enrichment will happen later when sync reads from extracted directory
+	return assets, nil
 }
 
 // enrichAsset adds file system information to the asset
