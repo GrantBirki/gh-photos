@@ -2,18 +2,34 @@
 
 set -euo pipefail
 
+# Parse command line arguments
+SKIP_GORELEASER=false
+for arg in "$@"; do
+  case $arg in
+    --skip-goreleaser)
+      SKIP_GORELEASER=true
+      shift
+      ;;
+    *)
+      # Keep other arguments for script/env
+      ;;
+  esac
+done
+
 source script/env "$@"
 
 echo -e "${BLUE}🥾 Bootstrapping...${OFF}"
 
 # Install goreleaser only if not already installed and in CI environment
-if [[ "${CI:-}" == "true" ]]; then
+if [[ "${CI:-}" == "true" ]] && [[ "$SKIP_GORELEASER" == "false" ]]; then
   if ! command -v goreleaser &> /dev/null; then
     GORELEASER_VERSION=$(cat .goreleaser-version)
     echo "GORELEASER_VERSION=${GORELEASER_VERSION}" >> $GITHUB_OUTPUT
     echo "Using goreleaser version ${GORELEASER_VERSION}"      
     sudo dpkg -i vendor_bin/goreleaser_${GORELEASER_VERSION}_amd64.deb
   fi
+elif [[ "$SKIP_GORELEASER" == "true" ]]; then
+  echo "Skipping goreleaser installation due to --skip-goreleaser flag"
 fi
 
 # Hermetic check: ensure all imports resolve from vendor/ only
