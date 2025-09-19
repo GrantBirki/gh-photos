@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -59,13 +60,36 @@ func (a *Asset) ShouldExclude(includeHidden, includeRecentlyDeleted bool) bool {
 }
 
 // GenerateTargetPath creates the target path following the YYYY/MM/DD/category structure
-func (a *Asset) GenerateTargetPath() string {
+// PathGranularity controls how deep the date-based folder structure should go
+// Allowed values: "year", "month", "day" (default: day)
+type PathGranularity string
+
+const (
+	GranularityYear  PathGranularity = "year"
+	GranularityMonth PathGranularity = "month"
+	GranularityDay   PathGranularity = "day"
+)
+
+// GenerateTargetPath creates the target path following the selected granularity and category structure
+// Default behavior (day granularity): YYYY/MM/DD/<type>/filename
+// Month granularity: YYYY/MM/<type>/filename
+// Year granularity: YYYY/<type>/filename
+func (a *Asset) GenerateTargetPath(granularity PathGranularity) string {
 	year := a.CreationDate.Format("2006")
 	month := a.CreationDate.Format("01")
 	day := a.CreationDate.Format("02")
 
-	path := filepath.Join(year, month, day, string(a.Type), a.Filename)
-	return filepath.Clean(path)
+	var p string
+	switch granularity {
+	case GranularityYear:
+		p = path.Join(year, string(a.Type), a.Filename)
+	case GranularityMonth:
+		p = path.Join(year, month, string(a.Type), a.Filename)
+	default: // day granularity
+		p = path.Join(year, month, day, string(a.Type), a.Filename)
+	}
+	// path.Join already returns forward slashes
+	return p
 }
 
 // ComputeChecksum calculates SHA256 checksum of the asset file

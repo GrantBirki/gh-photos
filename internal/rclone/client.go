@@ -108,7 +108,9 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 
 	// Add source and destination
 	args = append(args, entry.SourcePath)
-	args = append(args, fmt.Sprintf("%s:%s", c.remote, entry.TargetPath))
+	// Normalize to forward slashes for remote destinations; rclone tolerates but we keep consistent
+	normalized := strings.ReplaceAll(entry.TargetPath, "\\", "/")
+	args = append(args, fmt.Sprintf("%s:%s", c.remote, normalized))
 
 	c.logDebug("starting single file upload",
 		"source", entry.SourcePath,
@@ -204,6 +206,11 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 
 	// Process each directory group
 	for targetDir, groupEntries := range dirGroups {
+		// Normalize target directory path for remote (forward slashes)
+		normalizedDir := strings.ReplaceAll(targetDir, "\\", "/")
+		if normalizedDir == "." || normalizedDir == "" {
+			normalizedDir = "" // root of remote path
+		}
 		c.logDebug("processing directory group", "dir", targetDir, "files", len(groupEntries))
 		// Create temporary directory for this batch
 		tempDir, err := os.MkdirTemp("", "gh-photos-batch-*")
@@ -235,7 +242,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 
 		// Build rclone command for batch upload
-		args := []string{"copy", tempDir, fmt.Sprintf("%s:%s", c.remote, targetDir)}
+		args := []string{"copy", tempDir, fmt.Sprintf("%s:%s", c.remote, normalizedDir)}
 
 		if c.skipExisting {
 			args = append(args, "--ignore-existing")

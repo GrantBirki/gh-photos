@@ -57,6 +57,7 @@ type Config struct {
 	StartDate              *time.Time `json:"start_date,omitempty"`
 	EndDate                *time.Time `json:"end_date,omitempty"`
 	AssetTypes             []string   `json:"asset_types,omitempty"`
+	PathGranularity        string     `json:"path_granularity,omitempty"`
 }
 
 // Summary provides aggregate statistics about the operation
@@ -100,9 +101,15 @@ func (g *Generator) CreateManifest(assets []*types.Asset) *Manifest {
 		Entries:      make([]Entry, 0, len(assets)),
 	}
 
+	// Determine granularity
+	granularity := types.PathGranularity(g.config.PathGranularity)
+	if granularity == "" {
+		granularity = types.GranularityDay
+	}
+
 	for _, asset := range assets {
 		// Generate target path (root prefix removed)
-		targetPath := asset.GenerateTargetPath()
+		targetPath := asset.GenerateTargetPath(granularity)
 
 		entry := Entry{
 			SourcePath:   asset.SourcePath,

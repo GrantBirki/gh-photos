@@ -160,6 +160,7 @@ Examples:
 	cmd.Flags().StringVar(&config.SaveManifest, "save-manifest", "", "path to save operation manifest (JSON)")
 	cmd.Flags().StringSliceVar(&config.AssetTypes, "types", nil, "comma-separated asset types to include (photos,videos,screenshots,burst,live_photos)")
 	cmd.Flags().StringSliceVar(&config.IgnorePatterns, "ignore", nil, "patterns to ignore (supports wildcards and directory names like 'PhotoData')")
+	cmd.Flags().StringVar(&config.PathGranularity, "path-granularity", "day", "date path depth: year, month, or day (default: day)")
 
 	// Audit trail flags
 	cmd.Flags().StringVar(&config.SaveAuditManifest, "save-audit-manifest", "", "path to save an additional copy of the audit trail manifest (JSON)")
@@ -233,6 +234,16 @@ Examples:
 		}
 		if !validLogLevels[config.LogLevel] {
 			return fmt.Errorf("invalid log level '%s'. Valid levels: debug, info, warn, error", config.LogLevel)
+		}
+
+		// Normalize and validate path granularity
+		config.PathGranularity = strings.ToLower(strings.TrimSpace(config.PathGranularity))
+		if config.PathGranularity == "" {
+			config.PathGranularity = "day"
+		}
+		validGranularity := map[string]bool{"year": true, "month": true, "day": true}
+		if !validGranularity[config.PathGranularity] {
+			return fmt.Errorf("invalid path granularity '%s'. Valid values: year, month, day", config.PathGranularity)
 		}
 
 		return nil
@@ -1184,6 +1195,9 @@ func buildSyncCommand(invocation audit.Invocation, sourcePath string) string {
 	}
 	if len(flags.IgnorePatterns) > 0 {
 		parts = append(parts, fmt.Sprintf("--ignore=%s", strings.Join(flags.IgnorePatterns, ",")))
+	}
+	if flags.PathGranularity != "" && flags.PathGranularity != "day" {
+		parts = append(parts, fmt.Sprintf("--path-granularity=%s", flags.PathGranularity))
 	}
 
 	return strings.Join(parts, " ")

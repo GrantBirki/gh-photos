@@ -18,6 +18,7 @@ This project is a [`gh cli`](https://github.com/cli/cli) extension that extracts
 
 - 📱 Extracts photos from unencrypted iPhone backups
 - 🗂️ Organizes uploads by date and asset type (`photos/YYYY/MM/DD/<category>/`)
+- 🗂️ Flexible date-based folder depth (year, month, or day) with `--path-granularity` (`YYYY/`, `YYYY/MM/`, or `YYYY/MM/DD/`)
 - 🔐 Privacy-safe defaults (excludes Hidden/Recently Deleted albums)
 - ☁️ Supports all **rclone** remotes (Google Drive, S3, OneDrive, etc.)
 - ⚡ Parallel uploads for faster performance
@@ -169,6 +170,12 @@ gh photos sync /backup GoogleDriveRemote:photos \
   --remote-pre-scan \
   --skip-existing
 
+# Organize by year/month only (reduces folder count)
+gh photos sync /backup GoogleDriveRemote:photos --path-granularity month
+
+# Organize by year only (flattest date structure)
+gh photos sync /backup GoogleDriveRemote:photos --path-granularity year
+
 # List assets with filtering
 gh photos list /backup \
   --include-hidden \
@@ -206,6 +213,7 @@ gh photos list /backup \
 | `--start-date` | Start date filter (YYYY-MM-DD) | - |
 | `--end-date` | End date filter (YYYY-MM-DD) | - |
 | `--ignore` | Comma-separated glob patterns to ignore (e.g. `Thumbnails/*,derivatives/*`) | - |
+| `--path-granularity` | Date folder depth: `year`, `month`, or `day` | `day` |
 
 #### List Command Flags
 
@@ -238,6 +246,20 @@ You can choose between three modes:
 | Force overwrite | `--force-overwrite` | Always uploads, overwriting existing | Ensures replacement | Extra bandwidth / potential remote versioning |
 
 Recommendation: Only use `--remote-pre-scan` if you specifically need a detailed pre-upload plan. Otherwise stick with the default fast mode.
+
+### Path Granularity (Date Folder Depth)
+
+By default, assets are organized as: `YYYY/MM/DD/<type>/<filename>`.
+
+You can reduce directory nesting with the `--path-granularity` flag:
+
+| Value | Resulting Structure | Example Path |
+|-------|---------------------|--------------|
+| `day` (default) | `YYYY/MM/DD/<type>/` | `2024/03/18/photos/IMG_0001.HEIC` |
+| `month` | `YYYY/MM/<type>/` | `2024/03/photos/IMG_0001.HEIC` |
+| `year` | `YYYY/<type>/` | `2024/photos/IMG_0001.HEIC` |
+
+Use `month` if you want only 12 folders per year per type, or `year` for the flattest structure while preserving type segregation.
 
 ### Environment Variables
 

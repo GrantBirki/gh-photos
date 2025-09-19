@@ -39,6 +39,7 @@ type Config struct {
 	SaveAuditManifest      string
 	UseLastCommand         bool
 	IgnorePatterns         []string
+	PathGranularity        string // year, month, day (default day)
 }
 
 // Uploader orchestrates the photo backup process
@@ -172,6 +173,7 @@ func (u *Uploader) Execute(ctx context.Context) error {
 		StartDate:              u.config.StartDate,
 		EndDate:                u.config.EndDate,
 		AssetTypes:             u.config.AssetTypes,
+		PathGranularity:        u.config.PathGranularity,
 	}
 
 	generator := manifest.NewGenerator(u.config.BackupPath, u.config.Remote, manifestConfig)
@@ -349,7 +351,11 @@ func (u *Uploader) filterAssets(assets []*types.Asset) []*types.Asset {
 		}
 
 		// Generate target path (YYYY/MM/DD/type/filename)
-		asset.TargetPath = asset.GenerateTargetPath()
+		granularity := types.PathGranularity(u.config.PathGranularity)
+		if granularity == "" {
+			granularity = types.GranularityDay
+		}
+		asset.TargetPath = asset.GenerateTargetPath(granularity)
 
 		filtered = append(filtered, asset)
 	}
@@ -511,6 +517,7 @@ func (u *Uploader) setupAuditTrail() error {
 		Verify:                 u.config.Verify,
 		Checksum:               u.config.ComputeChecksums,
 		IgnorePatterns:         u.config.IgnorePatterns,
+		PathGranularity:        u.config.PathGranularity,
 	}
 
 	u.auditTrail.SetInvocation(u.config.Remote, flags)

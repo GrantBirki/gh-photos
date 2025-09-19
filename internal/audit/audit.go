@@ -56,6 +56,7 @@ type InvocationFlags struct {
 	Verify                 bool       `json:"verify,omitempty"`
 	Checksum               bool       `json:"checksum,omitempty"`
 	IgnorePatterns         []string   `json:"ignore_patterns,omitempty"`
+	PathGranularity        string     `json:"path_granularity,omitempty"`
 }
 
 // Summary provides aggregate statistics about the operation
