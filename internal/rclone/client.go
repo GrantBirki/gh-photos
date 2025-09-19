@@ -28,7 +28,9 @@ type Client struct {
 	logLevel            string
 	backupPath          string // Added to support metadata file discovery
 	startupTestComplete bool   // Track if startup connectivity test has been done
-} // buildRemotePath safely constructs a remote destination path ensuring only one colon
+}
+
+// buildRemotePath safely constructs a remote destination path ensuring only one colon
 // between remote name and path, normalizing slashes and removing duplicate separators.
 func (c *Client) buildRemotePath(subPath string) string {
 	spec := c.remote
@@ -41,35 +43,32 @@ func (c *Client) buildRemotePath(subPath string) string {
 
 	hadLeadingSlash := strings.HasPrefix(basePath, "/")
 
-	normalizeBase := func(p string) string {
+	// Helper function to normalize path separators and clean up duplicates
+	normalizePath := func(p string, preserveLeadingSlash bool) string {
+		// Convert backslashes to forward slashes
 		p = strings.ReplaceAll(p, "\\", "/")
-		// collapse duplicate slashes
+
+		// Collapse duplicate slashes
 		for strings.Contains(p, "//") {
 			p = strings.ReplaceAll(p, "//", "/")
 		}
-		// preserve single leading slash if originally absolute
-		if strings.HasPrefix(p, "/") {
-			// trim trailing slash (except root)
+
+		// Handle leading/trailing slashes based on context
+		if preserveLeadingSlash && strings.HasPrefix(p, "/") {
+			// Trim trailing slash (except for root)
 			if len(p) > 1 {
 				p = strings.TrimSuffix(p, "/")
 			}
-			return p
+		} else {
+			// Trim leading and trailing slashes for relative paths
+			p = strings.Trim(p, "/")
 		}
-		// relative path: trim leading/trailing slashes
-		p = strings.Trim(p, "/")
-		return p
-	}
-	normalizeSub := func(p string) string {
-		p = strings.ReplaceAll(p, "\\", "/")
-		for strings.Contains(p, "//") {
-			p = strings.ReplaceAll(p, "//", "/")
-		}
-		p = strings.Trim(p, "/")
+
 		return p
 	}
 
-	basePath = normalizeBase(basePath)
-	subPath = normalizeSub(subPath)
+	basePath = normalizePath(basePath, true) // Preserve leading slash for absolute paths
+	subPath = normalizePath(subPath, false)  // Always relative, no leading slash
 
 	// Restore leading slash if original spec indicated absolute path (e.g., sftp:/absolute/path)
 	if hadLeadingSlash && basePath != "" && !strings.HasPrefix(basePath, "/") {
@@ -95,24 +94,27 @@ func (c *Client) buildRemotePath(subPath string) string {
 	return remoteName + ":" + joined
 }
 
-// helper logging methods to avoid nil checks everywhere
+// Helper logging methods to avoid nil checks everywhere
 func (c *Client) logDebug(msg string, args ...any) {
-	if c != nil && c.logger != nil {
+	if c.logger != nil {
 		c.logger.Debug(msg, args...)
 	}
 }
+
 func (c *Client) logInfo(msg string, args ...any) {
-	if c != nil && c.logger != nil {
+	if c.logger != nil {
 		c.logger.Info(msg, args...)
 	}
 }
+
 func (c *Client) logWarn(msg string, args ...any) {
-	if c != nil && c.logger != nil {
+	if c.logger != nil {
 		c.logger.Warn(msg, args...)
 	}
 }
+
 func (c *Client) logError(msg string, args ...any) {
-	if c != nil && c.logger != nil {
+	if c.logger != nil {
 		c.logger.Error(msg, args...)
 	}
 }
@@ -134,33 +136,64 @@ func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, l
 	if len(remotePreScan) > 0 {
 		preScan = remotePreScan[0]
 	}
-	c := &Client{
-		remote:              remote,
-		parallel:            parallel,
-		verify:              verify,
-		dryRun:              dryRun,
-		skipExisting:        skipExisting,
-		remotePreScan:       preScan,
-		logger:              logger,
-		logLevel:            logLevel,
-		backupPath:          "", // Will be set later via SetBackupPath if needed
-		startupTestComplete: false,
+
+	return &Client{
+		remote:        remote,
+		parallel:      parallel,
+		verify:        verify,
+		dryRun:        dryRun,
+		skipExisting:  skipExisting,
+		remotePreScan: preScan,
+		logger:        logger,
+		logLevel:      logLevel,
 	}
-	c.logDebug("rclone client created",
-		"remote", remote,
-		"parallel", parallel,
-		"verify", verify,
-		"dry_run", dryRun,
-		"skip_existing", skipExisting,
-		"remote_pre_scan", preScan,
-		"log_level", logLevel,
-	)
-	return c
 }
 
 // SetBackupPath sets the backup path for metadata file discovery
 func (c *Client) SetBackupPath(backupPath string) {
 	c.backupPath = backupPath
+}
+
+// getBaseRemote extracts the base remote name from the remote specification
+func (c *Client) getBaseRemote() string {
+	if strings.Contains(c.remote, ":") && !strings.HasSuffix(c.remote, ":") {
+		return c.remote[:strings.Index(c.remote, ":")+1]
+	}
+	if !strings.HasSuffix(c.remote, ":") {
+		return c.remote + ":"
+	}
+	return c.remote
+}
+
+// handleDryRunBatch processes batch upload in dry-run mode
+func (c *Client) handleDryRunBatch(entries []manifest.Entry, updateCallback func(int, manifest.OperationStatus, string), progressCallback ProgressCallback) error {
+	for i, entry := range entries {
+		if progressCallback != nil {
+			progressCallback(i, len(entries), filepath.Base(entry.SourcePath))
+		}
+		fmt.Printf("[DRY-RUN] Would upload: %s -> %s:%s\n",
+			entry.SourcePath, c.remote, entry.TargetPath)
+		updateCallback(i, manifest.StatusUploaded, "")
+	}
+	if progressCallback != nil {
+		progressCallback(len(entries), len(entries), "")
+	}
+	c.logInfo("dry-run batch upload complete")
+	return nil
+}
+
+// performRemotePreScan checks which files already exist on the remote
+func (c *Client) performRemotePreScan(ctx context.Context, entries []manifest.Entry) map[string]bool {
+	c.logInfo("Pre-scanning remote for existing files (may be slower)", "files_to_check", len(entries))
+
+	existingFiles, err := c.BatchCheckRemoteExists(ctx, entries)
+	if err != nil {
+		c.logWarn("Failed to batch check remote files, falling back to individual checks", "error", err.Error())
+		return nil
+	}
+
+	c.logInfo("Remote file check complete", "existing_files", len(existingFiles))
+	return existingFiles
 }
 
 // RunStartupConnectivityTest runs comprehensive connectivity tests at startup
@@ -173,13 +206,7 @@ func (c *Client) RunStartupConnectivityTest() error {
 	c.logInfo("running startup connectivity tests...")
 
 	// Test 1: Basic remote connectivity
-	baseRemote := c.remote
-	if strings.Contains(c.remote, ":") && !strings.HasSuffix(c.remote, ":") {
-		baseRemote = c.remote[:strings.Index(c.remote, ":")+1]
-	} else if !strings.HasSuffix(c.remote, ":") {
-		baseRemote = c.remote + ":"
-	}
-
+	baseRemote := c.getBaseRemote()
 	c.logDebug("testing base remote connectivity", "base_remote", baseRemote)
 	if err := c.testRemoteConnectivity(baseRemote); err != nil {
 		return fmt.Errorf("base remote connectivity test failed: %w", err)
@@ -241,12 +268,13 @@ func (c *Client) getTimestampFromMetadata(metadataPath string) (string, error) {
 
 	// Convert to our filename format
 	return parsedTime.Format("2006-01-02T15-04-05Z"), nil
-} // UploadEntry uploads a single manifest entry
+}
+
+// UploadEntry uploads a single manifest entry
 func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	if c.dryRun {
 		fmt.Printf("[DRY-RUN] Would upload: %s -> %s:%s\n",
 			entry.SourcePath, c.remote, entry.TargetPath)
-		c.logInfo("dry-run upload entry", "source", entry.SourcePath, "dest_remote", c.remote, "dest_path", entry.TargetPath)
 		return nil
 	}
 
@@ -299,22 +327,10 @@ func (c *Client) UploadBatch(ctx context.Context, entries []manifest.Entry, upda
 		return nil
 	}
 	c.logInfo("starting batch upload", "entries", len(entries))
-	// Handle dry run mode - just report what would be uploaded
+
+	// Handle dry run mode
 	if c.dryRun {
-		for i, entry := range entries {
-			if progressCallback != nil {
-				progressCallback(i, len(entries), filepath.Base(entry.SourcePath))
-			}
-			fmt.Printf("[DRY-RUN] Would upload: %s -> %s:%s\n",
-				entry.SourcePath, c.remote, entry.TargetPath)
-			c.logDebug("dry-run batch entry", "index", i, "source", entry.SourcePath, "target", entry.TargetPath)
-			updateCallback(i, manifest.StatusUploaded, "")
-		}
-		if progressCallback != nil {
-			progressCallback(len(entries), len(entries), "")
-		}
-		c.logInfo("dry-run batch upload complete")
-		return nil
+		return c.handleDryRunBatch(entries, updateCallback, progressCallback)
 	}
 
 	// Determine optimal chunk size based on dataset size for better progress feedback
@@ -460,7 +476,9 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			return fmt.Errorf("rclone batch upload failed: %w", err)
 		}
 
-		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode()) // Mark all entries in this batch as successful
+		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())
+
+		// Mark all entries in this batch as successful
 		for _, entry := range groupEntries {
 			completed++
 			// Find original index
@@ -578,7 +596,6 @@ func (c *Client) listAllRemoteFiles(ctx context.Context) (map[string]bool, error
 func (c *Client) VerifyUpload(ctx context.Context, entry manifest.Entry) error {
 	if c.dryRun {
 		fmt.Printf("[DRY-RUN] Would verify: %s:%s\n", c.remote, entry.TargetPath)
-		c.logInfo("dry-run verify", "target", entry.TargetPath)
 		return nil
 	}
 
@@ -686,25 +703,10 @@ func ValidateRemoteAuthentication(remote string, log *logger.Logger) error {
 func (c *Client) CreateUploadPlan(ctx context.Context, entries []manifest.Entry) ([]UploadPlanEntry, error) {
 	plan := make([]UploadPlanEntry, 0, len(entries))
 
-	// If skip existing and remote pre-scan is enabled, batch check all remote files at once
+	// Pre-scan remote for existing files if enabled
 	var existingFiles map[string]bool
 	if c.skipExisting && c.remotePreScan {
-		if c.logger != nil {
-			c.logger.Info("Pre-scanning remote for existing files (may be slower)", "files_to_check", len(entries))
-		}
-
-		var err error
-		existingFiles, err = c.BatchCheckRemoteExists(ctx, entries)
-		if err != nil {
-			if c.logger != nil {
-				c.logger.Warn("Failed to batch check remote files, falling back to individual checks", "error", err.Error())
-			}
-			// Fall back to individual checks if batch fails
-			existingFiles = nil
-		} else if c.logger != nil {
-			existingCount := len(existingFiles)
-			c.logger.Info("Remote file check complete", "existing_files", existingCount)
-		}
+		existingFiles = c.performRemotePreScan(ctx, entries)
 	}
 
 	// Process each entry
@@ -800,12 +802,6 @@ func PrintUploadPlan(plan []UploadPlanEntry) {
 	if errorCount > 0 {
 		fmt.Printf("  Error:  %d files\n", errorCount)
 	}
-}
-
-// result represents the result of an upload operation
-type result struct {
-	index int
-	err   error
 }
 
 // testRemoteConnectivity tests basic connectivity to the remote storage
@@ -908,76 +904,9 @@ func (c *Client) testRemoteWriteCapabilityStartup() error {
 	c.logInfo("extraction metadata backup created", "remote_path", metadataRemotePath)
 
 	return nil
-} // listRemoteDirectory lists the contents of a remote directory for debugging
-func (c *Client) listRemoteDirectory(remoteDirPath string) error {
-	if c.dryRun {
-		c.logDebug("dry-run directory listing skipped", "remote_dir", remoteDirPath)
-		return nil
-	}
-
-	// Use rclone lsl to list files with details
-	args := []string{"lsl", remoteDirPath}
-
-	cmd := exec.Command("rclone", args...)
-	c.logDebug("listing remote directory", "command", cmd.String())
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	if err != nil {
-		stderrStr := stderr.String()
-		stdoutStr := stdout.String()
-		c.logError("remote directory listing failed", "error", err, "stderr", stderrStr, "stdout", stdoutStr, "remote_dir", remoteDirPath)
-		return fmt.Errorf("remote directory listing failed for %s: %w (stderr: %s)", remoteDirPath, err, stderrStr)
-	}
-
-	output := strings.TrimSpace(stdout.String())
-	if output == "" {
-		c.logWarn("remote directory is empty or doesn't exist", "remote_dir", remoteDirPath)
-	} else {
-		c.logDebug("remote directory contents", "remote_dir", remoteDirPath, "files", output)
-	}
-	return nil
 }
 
-// verifySingleFileVisibility checks if a specific file is visible in the remote storage
-func (c *Client) verifySingleFileVisibility(remotePath string) error {
-	if c.dryRun {
-		c.logDebug("dry-run verification skipped", "remote_path", remotePath)
-		return nil
-	}
-
-	// Use rclone lsf to check if the file exists and is visible
-	args := []string{"lsf", remotePath}
-
-	cmd := exec.Command("rclone", args...)
-	c.logDebug("running file visibility check", "command", cmd.String(), "args", args)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	if err != nil {
-		stderrStr := stderr.String()
-		stdoutStr := stdout.String()
-		c.logError("file visibility check failed", "error", err, "stderr", stderrStr, "stdout", stdoutStr, "remote_path", remotePath)
-		return fmt.Errorf("file visibility check failed for %s: %w (stderr: %s)", remotePath, err, stderrStr)
-	}
-
-	output := strings.TrimSpace(stdout.String())
-	if output == "" {
-		c.logError("file not visible after upload", "remote_path", remotePath)
-		return fmt.Errorf("file not visible in remote storage: %s", remotePath)
-	}
-
-	c.logDebug("file visibility confirmed", "remote_path", remotePath, "output", output)
-	return nil
-} // humanizeBytes converts bytes to human readable format
+// humanizeBytes converts bytes to human readable format
 func humanizeBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {

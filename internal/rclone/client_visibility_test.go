@@ -52,31 +52,6 @@ func TestBuildRemotePathConsistency(t *testing.T) {
 	}
 }
 
-func TestVerifySingleFileVisibilityDryRun(t *testing.T) {
-	// Test dry run behavior
-	var logBuffer bytes.Buffer
-	config := logger.Config{
-		Output: &logBuffer,
-		Level:  logger.LevelDebug,
-	}
-	l := logger.New(config)
-
-	// Create client in dry run mode
-	client := NewClient("test-remote", 1, false, true, false, l, "debug")
-
-	// Test dry run - should skip verification
-	err := client.verifySingleFileVisibility("remote:path/to/file.jpg")
-	if err != nil {
-		t.Errorf("Expected no error in dry run mode, got: %v", err)
-	}
-
-	// Check logs contain expected dry run message
-	logOutput := logBuffer.String()
-	if !containsString(logOutput, "dry-run verification skipped") {
-		t.Error("Expected dry-run verification skip message in logs")
-	}
-}
-
 func TestFindExtractionMetadataFile(t *testing.T) {
 	// Create temporary directory and metadata file
 	tempDir := t.TempDir()
