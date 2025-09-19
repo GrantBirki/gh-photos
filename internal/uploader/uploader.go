@@ -38,6 +38,7 @@ type Config struct {
 	Verbose                bool
 	SaveAuditManifest      string
 	UseLastCommand         bool
+	IgnorePatterns         []string
 }
 
 // Uploader orchestrates the photo backup process
@@ -249,7 +250,7 @@ func (u *Uploader) Execute(ctx context.Context) error {
 // filterAssets applies filters to the asset list
 func (u *Uploader) filterAssets(assets []*types.Asset) []*types.Asset {
 	var filtered []*types.Asset
-	var hiddenCount, recentlyDeletedCount, dateFilteredCount, typeFilteredCount int
+	var hiddenCount, recentlyDeletedCount, dateFilteredCount, typeFilteredCount, ignorePatternsCount int
 
 	for _, asset := range assets {
 		// Apply exclusion rules and count what's being excluded
@@ -288,6 +289,52 @@ func (u *Uploader) filterAssets(assets []*types.Asset) []*types.Asset {
 			}
 		}
 
+		// Apply ignore patterns - check both source path and filename
+		if len(u.config.IgnorePatterns) > 0 {
+			shouldIgnore := false
+			for _, pattern := range u.config.IgnorePatterns {
+				// Check if pattern matches the filename directly
+				if matched, _ := filepath.Match(pattern, filepath.Base(asset.SourcePath)); matched {
+					shouldIgnore = true
+					break
+				}
+
+				// Check if pattern is a simple directory name (exact substring match)
+				if !strings.Contains(pattern, "*") && !strings.Contains(pattern, "?") {
+					if strings.Contains(asset.SourcePath, pattern) {
+						shouldIgnore = true
+						break
+					}
+				} else {
+					// Handle patterns with wildcards
+					// For patterns like "Thumbnails/*", check if any directory in the path matches
+					if strings.HasSuffix(pattern, "/*") {
+						dirPattern := strings.TrimSuffix(pattern, "/*")
+						if strings.Contains(asset.SourcePath, "/"+dirPattern+"/") {
+							shouldIgnore = true
+							break
+						}
+					} else {
+						// For other wildcard patterns, check each path component
+						pathParts := strings.Split(filepath.Dir(asset.SourcePath), string(filepath.Separator))
+						for _, part := range pathParts {
+							if matched, _ := filepath.Match(pattern, part); matched {
+								shouldIgnore = true
+								break
+							}
+						}
+						if shouldIgnore {
+							break
+						}
+					}
+				}
+			}
+			if shouldIgnore {
+				ignorePatternsCount++
+				continue
+			}
+		}
+
 		// Generate target path
 		asset.TargetPath = asset.GenerateTargetPath(u.config.RootPrefix)
 
@@ -306,6 +353,9 @@ func (u *Uploader) filterAssets(assets []*types.Asset) []*types.Asset {
 	}
 	if typeFilteredCount > 0 {
 		u.logInfo("Excluding %d assets due to type filters", typeFilteredCount)
+	}
+	if ignorePatternsCount > 0 {
+		u.logInfo("Excluding %d assets due to ignore patterns", ignorePatternsCount)
 	}
 
 	return filtered
@@ -415,6 +465,7 @@ func (u *Uploader) setupAuditTrail() error {
 		Root:                   u.config.RootPrefix,
 		Verify:                 u.config.Verify,
 		Checksum:               u.config.ComputeChecksums,
+		IgnorePatterns:         u.config.IgnorePatterns,
 	}
 
 	u.auditTrail.SetInvocation(u.config.Remote, flags)

@@ -162,6 +162,7 @@ Examples:
 	cmd.Flags().StringVar(&config.RootPrefix, "root", "photos", "root directory prefix for uploads")
 	cmd.Flags().StringVar(&config.SaveManifest, "save-manifest", "", "path to save operation manifest (JSON)")
 	cmd.Flags().StringSliceVar(&config.AssetTypes, "types", nil, "comma-separated asset types to include (photos,videos,screenshots,burst,live_photos)")
+	cmd.Flags().StringSliceVar(&config.IgnorePatterns, "ignore", nil, "patterns to ignore (supports wildcards and directory names like 'PhotoData')")
 
 	// Audit trail flags
 	cmd.Flags().StringVar(&config.SaveAuditManifest, "save-audit-manifest", "", "path to save an additional copy of the audit trail manifest (JSON)")
@@ -1117,6 +1118,9 @@ func loadLastCommandConfig(config *uploader.Config, cmd *cobra.Command, args []s
 	if !cmd.Flags().Changed("checksum") {
 		config.ComputeChecksums = trail.Metadata.Invocation.Flags.Checksum
 	}
+	if !cmd.Flags().Changed("ignore") && len(trail.Metadata.Invocation.Flags.IgnorePatterns) > 0 {
+		config.IgnorePatterns = trail.Metadata.Invocation.Flags.IgnorePatterns
+	}
 
 	// Override backup path and remote if not provided as arguments
 	if len(args) == 0 {
@@ -1186,6 +1190,9 @@ func buildSyncCommand(invocation audit.Invocation, sourcePath string) string {
 	}
 	if flags.Checksum {
 		parts = append(parts, "--checksum")
+	}
+	if len(flags.IgnorePatterns) > 0 {
+		parts = append(parts, fmt.Sprintf("--ignore=%s", strings.Join(flags.IgnorePatterns, ",")))
 	}
 
 	return strings.Join(parts, " ")

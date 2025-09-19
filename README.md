@@ -112,7 +112,7 @@ After extraction, you can run normal sync operations:
 ```bash
 # Extract first, then sync using extracted directory
 gh photos extract /path/to/backup ./extracted
-gh photos sync ./extracted gdrive:photos
+gh photos sync ./extracted GoogleDriveRemote:photos
 ```
 
 ## Usage 🚀
@@ -127,10 +127,10 @@ gh photos extract /path/to/backup
 gh photos extract /path/to/backup ./extracted-backup
 
 # Sync photos from iPhone backup to Google Drive
-gh photos sync /path/to/backup gdrive:photos
+gh photos sync /path/to/backup GoogleDriveRemote:photos
 
 # Dry run to preview what would be uploaded
-gh photos sync /path/to/backup gdrive:photos --dry-run
+gh photos sync /path/to/extracted/backup GoogleDriveRemote:photos --dry-run
 
 # Validate an iPhone backup directory
 gh photos validate /path/to/backup
@@ -138,18 +138,18 @@ gh photos validate /path/to/backup
 # List assets found in backup
 gh photos list /path/to/backup
 
-# Upload to nested folder structure on the remote - This creates: Google Drive/Backups/iPhone/2024/YYYY/MM/DD/
-gh photos sync /path/to/backup gdrive:Backups/iPhone/2024
+# Upload to nested folder structure on the remote - This creates: Google Drive/Backups/iPhone/photos/YYYY/MM/DD/
+gh photos sync /path/to/backup GoogleDriveRemote:Backups/iPhone/photos --ignore Thumbnails/*,derivatives/*
 
 # This creates: Google Drive/Photos/family-photos/YYYY/MM/DD/
-gh photos sync /backup gdrive:Photos --root "family-photos"
+gh photos sync /backup GoogleDriveRemote:Photos --root "family-photos"
 ```
 
 ### Advanced Usage Examples
 
 ```bash
 # Sync with custom settings (skips existing files by default)
-gh photos sync /backup gdrive:photos \
+gh photos sync /backup GoogleDriveRemote:photos \
   --include-hidden \
   --parallel 8 \
   --checksum \
@@ -162,12 +162,12 @@ gh photos sync /backup s3:mybucket/photos \
   --types photos,videos
 
 # Upload to custom root directory (skipping existing files by default)
-gh photos sync /backup gdrive:photos \
+gh photos sync /backup GoogleDriveRemote:photos \
   --root "family-photos" \
   --verify
 
 # Force overwrite existing files
-gh photos sync /backup gdrive:photos \
+gh photos sync /backup GoogleDriveRemote:photos \
   --force-overwrite \
   --verify
 
@@ -207,6 +207,7 @@ gh photos list /backup \
 | `--types` | Asset types to include (photos,videos,screenshots,burst,live_photos) | all |
 | `--start-date` | Start date filter (YYYY-MM-DD) | - |
 | `--end-date` | End date filter (YYYY-MM-DD) | - |
+| `--ignore` | Comma-separated glob patterns to ignore (e.g. `Thumbnails/*,derivatives/*`) | - |
 
 #### List Command Flags
 

@@ -126,8 +126,15 @@ func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, e
 				}
 			}
 		} else {
-			// For non-DCIM files, place in appropriate domain
-			asset.SourcePath = filepath.Join(backupPath, mediaDomain, asset.Filename)
+			// For non-DCIM files, try to find them in the media domain
+			// First try in Media directory
+			mediaPath := filepath.Join(backupPath, mediaDomain, "Media", asset.Filename)
+			if _, err := os.Stat(mediaPath); err == nil {
+				asset.SourcePath = mediaPath
+			} else {
+				// Fallback to domain root
+				asset.SourcePath = filepath.Join(backupPath, mediaDomain, asset.Filename)
+			}
 		}
 	}
 

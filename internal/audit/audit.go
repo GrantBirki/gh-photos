@@ -56,6 +56,7 @@ type InvocationFlags struct {
 	Root                   string     `json:"root,omitempty"`
 	Verify                 bool       `json:"verify,omitempty"`
 	Checksum               bool       `json:"checksum,omitempty"`
+	IgnorePatterns         []string   `json:"ignore_patterns,omitempty"`
 }
 
 // Summary provides aggregate statistics about the operation
