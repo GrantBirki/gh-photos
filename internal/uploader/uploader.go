@@ -411,24 +411,9 @@ func (u *Uploader) uploadProgressCallback(completed, total int, currentFile stri
 	// Always show progress for uploads (not just in verbose mode)
 	if completed == total {
 		u.logSuccess("Upload completed: %d/%d files (100.0%%)", completed, total)
-	} else if completed%50 == 0 || completed == 1 || (completed%10 == 0 && total <= 100) || total-completed <= 5 {
-		// Show progress based on total files:
-		// - Every 50 files for large batches (>100 files)
-		// - Every 10 files for smaller batches (<=100 files)
-		// - Always show first file and last 5 files
-		if total > 1000 {
-			// For very large uploads, show estimated time remaining
-			if completed > 10 {
-				// Simple ETA calculation based on average time per file
-				averageTime := time.Since(u.uploadStartTime) / time.Duration(completed)
-				remaining := time.Duration(total-completed) * averageTime
-				u.logInfo("Upload progress: %d/%d files (%.1f%%) - ETA: %v", completed, total, percentage, remaining.Round(time.Second))
-			} else {
-				u.logInfo("Upload progress: %d/%d files (%.1f%%)", completed, total, percentage)
-			}
-		} else {
-			u.logInfo("Upload progress: %d/%d files (%.1f%%) - %s", completed, total, percentage, currentFile)
-		}
+	} else if completed == 1 || completed%5 == 0 || total-completed <= 3 {
+		// Show simple progress every 5 files, plus first file and last 3 files
+		u.logInfo("Upload progress: %d/%d files (%.1f%%)", completed, total, percentage)
 	}
 
 	// In verbose mode, show every file
