@@ -88,38 +88,46 @@ func NewExtractedBackupParser(backupPath, metadataPath string) (*BackupParser, e
 		return nil, fmt.Errorf("failed to parse extraction metadata: %w", err)
 	}
 
+	// Find available domains in the extracted directory
+	mediaDomain := findMediaDomain(backupPath)
+
 	// Update asset source paths to point to extracted files
 	for _, asset := range extractionMetadata.Assets {
 		// The extracted structure organizes files by domain, e.g.:
-		// MediaDomain/DCIM/100APPLE/IMG_001.HEIC
+		// CameraRollDomain/Media/DCIM/100APPLE/IMG_001.HEIC
 		// We need to reconstruct the full path from original SourcePath
 
 		// Clean the path and handle both forward and backward slashes
 		cleanPath := filepath.ToSlash(asset.SourcePath)
 
 		if strings.Contains(cleanPath, "DCIM") {
-			// Extract the DCIM path portion
-			parts := strings.Split(cleanPath, "/")
-			var dcimIndex int = -1
-			for i, part := range parts {
-				if part == "DCIM" {
-					dcimIndex = i
-					break
+			// For DCIM files, use the media domain we found
+			// Look for the filename in the DCIM directory structure
+			foundPath := findFileInDCIM(backupPath, mediaDomain, asset.Filename)
+			if foundPath != "" {
+				asset.SourcePath = foundPath
+			} else {
+				// Fallback: try to reconstruct from original path structure
+				parts := strings.Split(cleanPath, "/")
+				var dcimIndex int = -1
+				for i, part := range parts {
+					if part == "DCIM" {
+						dcimIndex = i
+						break
+					}
+				}
+				if dcimIndex >= 0 {
+					// Reconstruct path using found media domain
+					relativePath := filepath.Join(parts[dcimIndex:]...)
+					asset.SourcePath = filepath.Join(backupPath, mediaDomain, "Media", relativePath)
+				} else {
+					// Final fallback: assume it's in the media domain
+					asset.SourcePath = filepath.Join(backupPath, mediaDomain, "Media", "DCIM", asset.Filename)
 				}
 			}
-			if dcimIndex >= 0 {
-				// Reconstruct path: backupPath/MediaDomain/DCIM/folder/filename
-				relativePath := filepath.Join(parts[dcimIndex:]...)
-				asset.SourcePath = filepath.Join(backupPath, "MediaDomain", relativePath)
-			} else {
-				// Fallback: assume it's in MediaDomain/DCIM with filename
-				asset.SourcePath = filepath.Join(backupPath, "MediaDomain", "DCIM", asset.Filename)
-			}
 		} else {
-			// For non-DCIM files, use the original relative path structure
-			// Remove any leading domain parts and place under MediaDomain
-			cleanedPath := strings.TrimPrefix(cleanPath, "MediaDomain/")
-			asset.SourcePath = filepath.Join(backupPath, "MediaDomain", cleanedPath)
+			// For non-DCIM files, place in appropriate domain
+			asset.SourcePath = filepath.Join(backupPath, mediaDomain, asset.Filename)
 		}
 	}
 
@@ -485,4 +493,86 @@ func inferMimeType(filename string) string {
 	default:
 		return "application/octet-stream"
 	}
+}
+
+// findMediaDomain discovers the correct domain name for media files in extracted directory
+func findMediaDomain(backupPath string) string {
+	// Common domain names for media files in iPhone backups
+	possibleDomains := []string{
+		"CameraRollDomain",
+		"MediaDomain",
+		"CameraRollDomain-Media",
+		"Media",
+	}
+
+	for _, domain := range possibleDomains {
+		domainPath := filepath.Join(backupPath, domain)
+		if info, err := os.Stat(domainPath); err == nil && info.IsDir() {
+			// Check if it contains Media/DCIM or just DCIM
+			dcimPath := filepath.Join(domainPath, "Media", "DCIM")
+			if info, err := os.Stat(dcimPath); err == nil && info.IsDir() {
+				return domain
+			}
+			// Check for direct DCIM
+			dcimPath = filepath.Join(domainPath, "DCIM")
+			if info, err := os.Stat(dcimPath); err == nil && info.IsDir() {
+				return domain
+			}
+		}
+	}
+
+	// Fallback to the first domain we find
+	if entries, err := os.ReadDir(backupPath); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() && strings.Contains(entry.Name(), "Domain") {
+				return entry.Name()
+			}
+		}
+	}
+
+	return "MediaDomain" // Final fallback
+}
+
+// findFileInDCIM searches for a specific filename in the DCIM directory structure
+func findFileInDCIM(backupPath, mediaDomain, filename string) string {
+	// Try different DCIM path structures
+	dcimPaths := []string{
+		filepath.Join(backupPath, mediaDomain, "Media", "DCIM"),
+		filepath.Join(backupPath, mediaDomain, "DCIM"),
+	}
+
+	for _, dcimPath := range dcimPaths {
+		if info, err := os.Stat(dcimPath); err == nil && info.IsDir() {
+			// Walk through DCIM subdirectories (100APPLE, 101APPLE, etc.)
+			err := filepath.Walk(dcimPath, func(path string, info os.FileInfo, err error) error {
+				if err != nil {
+					return nil // Continue walking
+				}
+				if !info.IsDir() && info.Name() == filename {
+					return filepath.SkipAll // Found it, stop walking
+				}
+				return nil
+			})
+
+			if err == filepath.SkipAll {
+				// File was found during walk
+				var foundPath string
+				filepath.Walk(dcimPath, func(path string, info os.FileInfo, err error) error {
+					if err != nil {
+						return nil
+					}
+					if !info.IsDir() && info.Name() == filename {
+						foundPath = path
+						return filepath.SkipAll
+					}
+					return nil
+				})
+				if foundPath != "" {
+					return foundPath
+				}
+			}
+		}
+	}
+
+	return "" // Not found
 }

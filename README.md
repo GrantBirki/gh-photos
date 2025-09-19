@@ -110,9 +110,9 @@ gh photos extract /backup ./extracted --skip-existing
 After extraction, you can run normal sync operations:
 
 ```bash
-# Extract first, then sync
+# Extract first, then sync using extracted directory
 gh photos extract /path/to/backup ./extracted
-gh photos sync ./extracted/MediaDomain gdrive:photos
+gh photos sync ./extracted gdrive:photos
 ```
 
 ## Usage 🚀
