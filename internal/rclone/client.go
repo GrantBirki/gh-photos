@@ -184,50 +184,6 @@ func (c *Client) logError(msg string, args ...any) {
 	}
 }
 
-// logTempDirStructure logs the structure of a temporary directory for debugging
-func (c *Client) logTempDirStructure(tempDir string) {
-	if c.logger == nil {
-		return
-	}
-
-	err := filepath.Walk(tempDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		relPath, _ := filepath.Rel(tempDir, path)
-		if relPath == "." {
-			return nil
-		}
-
-		// Log file/directory with its relative path
-		if info.IsDir() {
-			c.logDebug("temp dir structure", "type", "directory", "path", relPath)
-		} else {
-			linkType := "unknown"
-			actualSize := info.Size()
-
-			if info.Mode()&os.ModeSymlink != 0 {
-				linkType = "symlink"
-				// For symlinks, get the actual target file size
-				if targetInfo, err := os.Stat(path); err == nil {
-					actualSize = targetInfo.Size()
-				}
-			} else if info.Mode().IsRegular() {
-				linkType = "regular_file"
-			}
-
-			c.logDebug("temp dir structure", "type", "file", "path", relPath, "size", actualSize, "link_type", linkType, "symlink_size", info.Size())
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		c.logError("failed to walk temp directory", "error", err, "temp_dir", tempDir)
-	}
-}
-
 // setupRcloneCmd configures an rclone command with proper environment
 func setupRcloneCmd(cmd *exec.Cmd) {
 	// Inherit the parent process's environment to ensure rclone has access to config
@@ -405,17 +361,6 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	dest := c.buildRemotePath(normalized)
 	args = append(args, dest)
 
-	c.logDebug("=== SINGLE FILE UPLOAD PATH ANALYSIS ===")
-	c.logDebug("single file upload path details",
-		"original_source", entry.SourcePath,
-		"original_target", entry.TargetPath,
-		"normalized_target", normalized,
-		"buildRemotePath_input", normalized,
-		"final_destination", dest,
-		"rclone_command", strings.Join(args, " "),
-	)
-	c.logDebug("=== END SINGLE FILE UPLOAD ANALYSIS ===")
-
 	c.logDebug("starting single file upload",
 		"source", entry.SourcePath,
 		"target", entry.TargetPath,
@@ -525,7 +470,6 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			return fmt.Errorf("failed to create temp directory: %w", err)
 		}
 		defer os.RemoveAll(tempDir)
-		c.logDebug("created temp directory", "path", tempDir)
 
 		// Create directory structure and copy files to temp location
 		for _, entry := range groupEntries {
@@ -554,30 +498,6 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		dest := c.buildRemotePath("")
 		c.logDebug("batch upload destination", "dest", dest, "temp_dir", tempDir)
 
-		// Add detailed file-by-file destination logging for debugging
-		if c.logLevel == "debug" {
-			c.logDebug("=== PRE-UPLOAD FILE DESTINATION ANALYSIS ===")
-			c.logDebug("rclone will copy from temp directory to remote destination", "temp_source", tempDir, "remote_dest", dest)
-
-			for i, entry := range groupEntries {
-				// Show where each file is located in temp directory
-				normalizedTargetPath := strings.ReplaceAll(entry.TargetPath, "\\", "/")
-				tempFilePath := filepath.Join(tempDir, normalizedTargetPath)
-
-				// Calculate where rclone will place this file on the remote
-				finalRemotePath := c.buildRemotePath(normalizedTargetPath)
-
-				c.logDebug("file mapping",
-					"index", i+1,
-					"original_source", entry.SourcePath,
-					"temp_location", tempFilePath,
-					"target_path", normalizedTargetPath,
-					"final_remote_path", finalRemotePath,
-				)
-			}
-			c.logDebug("=== END PRE-UPLOAD ANALYSIS ===")
-		}
-
 		args := []string{"copy", tempDir, dest}
 
 		if c.skipExisting {
@@ -599,52 +519,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			args = append(args, "--verbose")
 		}
 
-		// Execute batch rclone command
-		c.logDebug("=== RCLONE BATCH COMMAND COMPARISON ===")
-		c.logDebug("BATCH UPLOAD rclone command", "full_command", "rclone "+strings.Join(args, " "))
-		c.logDebug("BATCH UPLOAD command breakdown",
-			"command", "rclone copy",
-			"source", tempDir,
-			"destination", dest,
-			"additional_flags", args[3:], // Everything after source and dest
-		)
-		c.logDebug("Compare with METADATA upload which uses: rclone copyto <source> <exact_destination>")
-		c.logDebug("=== END RCLONE COMMAND COMPARISON ===")
-
 		c.logDebug("executing rclone batch", "dir", targetDir, "file_count", len(groupEntries), "args", strings.Join(args, " "))
-		c.logDebug("temp directory contents before rclone", "temp_dir", tempDir)
-
-		// Log the actual directory structure being uploaded for debugging
-		if c.logLevel == "debug" {
-			c.logTempDirStructure(tempDir)
-
-			// Additional debugging: Test if symlinks are working by checking one file
-			if len(groupEntries) > 0 {
-				testEntry := groupEntries[0]
-				normalizedTestPath := strings.ReplaceAll(testEntry.TargetPath, "\\", "/")
-				testTempPath := filepath.Join(tempDir, normalizedTestPath)
-
-				// Check if symlink is readable
-				if info, err := os.Stat(testTempPath); err != nil {
-					c.logError("symlink stat failed", "error", err, "symlink_path", testTempPath)
-				} else {
-					c.logDebug("symlink verification", "symlink_path", testTempPath, "size", info.Size(), "is_symlink", info.Mode()&os.ModeSymlink != 0)
-				}
-
-				// Try to read a few bytes to ensure symlink works
-				if file, err := os.Open(testTempPath); err != nil {
-					c.logError("symlink open failed", "error", err, "symlink_path", testTempPath)
-				} else {
-					buffer := make([]byte, 100)
-					if n, err := file.Read(buffer); err != nil {
-						c.logError("symlink read failed", "error", err, "symlink_path", testTempPath)
-					} else {
-						c.logDebug("symlink read successful", "symlink_path", testTempPath, "bytes_read", n)
-					}
-					file.Close()
-				}
-			}
-		}
 
 		cmd := exec.CommandContext(ctx, "rclone", args...)
 		setupRcloneCmd(cmd)
@@ -722,100 +597,6 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 
 		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())
-
-		// Post-upload verification: Check if files actually appeared on remote
-		if c.logLevel == "debug" {
-			c.logDebug("=== POST-UPLOAD VERIFICATION ===")
-			// Check if at least one file from this batch exists on remote
-			if len(groupEntries) > 0 {
-				testEntry := groupEntries[0]
-				normalizedTestPath := strings.ReplaceAll(testEntry.TargetPath, "\\", "/")
-				expectedRemotePath := c.buildRemotePath(normalizedTestPath)
-
-				// Try to list the file to see if it exists
-				verifyCmd := exec.CommandContext(ctx, "rclone", "lsf", expectedRemotePath)
-				setupRcloneCmd(verifyCmd)
-
-				var verifyStdout, verifyStderr bytes.Buffer
-				verifyCmd.Stdout = &verifyStdout
-				verifyCmd.Stderr = &verifyStderr
-
-				verifyErr := verifyCmd.Run()
-				if verifyErr != nil {
-					c.logError("post-upload verification failed",
-						"error", verifyErr,
-						"expected_path", expectedRemotePath,
-						"verify_stderr", verifyStderr.String())
-				} else {
-					verifyOutput := strings.TrimSpace(verifyStdout.String())
-					if verifyOutput == "" {
-						c.logError("post-upload verification: file not found on remote",
-							"expected_path", expectedRemotePath)
-					} else {
-						c.logDebug("post-upload verification successful",
-							"expected_path", expectedRemotePath,
-							"found_file", verifyOutput)
-					}
-				}
-			}
-
-			// Also try listing the target directory to see what's actually there
-			targetDirNormalized := strings.ReplaceAll(targetDir, "\\", "/")
-			if targetDirNormalized != "" {
-				remoteDirPath := c.buildRemotePath(targetDirNormalized)
-				c.logDebug("checking target directory contents", "remote_dir", remoteDirPath)
-
-				listCmd := exec.CommandContext(ctx, "rclone", "lsf", remoteDirPath)
-				setupRcloneCmd(listCmd)
-
-				var listStdout, listStderr bytes.Buffer
-				listCmd.Stdout = &listStdout
-				listCmd.Stderr = &listStderr
-
-				listErr := listCmd.Run()
-				if listErr != nil {
-					c.logError("target directory listing failed",
-						"error", listErr,
-						"remote_dir", remoteDirPath,
-						"list_stderr", listStderr.String())
-				} else {
-					dirContents := strings.TrimSpace(listStdout.String())
-					if dirContents == "" {
-						c.logError("target directory is empty after upload", "remote_dir", remoteDirPath)
-					} else {
-						c.logDebug("target directory contents",
-							"remote_dir", remoteDirPath,
-							"contents", dirContents)
-					}
-				}
-			}
-
-			// Check what's in the base remote directory
-			baseRemotePath := c.buildRemotePath("")
-			c.logDebug("checking base remote directory contents", "base_remote", baseRemotePath)
-
-			baseListCmd := exec.CommandContext(ctx, "rclone", "lsf", baseRemotePath, "-R", "--max-depth", "3")
-			setupRcloneCmd(baseListCmd)
-
-			var baseListStdout, baseListStderr bytes.Buffer
-			baseListCmd.Stdout = &baseListStdout
-			baseListCmd.Stderr = &baseListStderr
-
-			baseListErr := baseListCmd.Run()
-			if baseListErr != nil {
-				c.logError("base remote directory listing failed",
-					"error", baseListErr,
-					"base_remote", baseRemotePath,
-					"list_stderr", baseListStderr.String())
-			} else {
-				baseContents := strings.TrimSpace(baseListStdout.String())
-				c.logDebug("base remote directory contents",
-					"base_remote", baseRemotePath,
-					"contents", baseContents)
-			}
-
-			c.logDebug("=== END POST-UPLOAD VERIFICATION ===")
-		}
 
 		// Mark all entries in this batch as successful
 		for _, entry := range groupEntries {
@@ -1201,14 +982,7 @@ func (c *Client) testRemoteWriteCapabilityStartup() error {
 	// This puts metadata under the same path as the uploaded photos
 	metadataRemotePath := c.buildRemotePath("metadata/" + metadataFileName)
 
-	c.logDebug("=== METADATA UPLOAD PATH ANALYSIS ===")
 	c.logDebug("uploading extraction metadata to remote", "local_path", metadataPath, "remote_path", metadataRemotePath)
-	c.logDebug("metadata upload details",
-		"sub_path", "metadata/"+metadataFileName,
-		"final_remote_path", metadataRemotePath,
-		"buildRemotePath_input", "metadata/"+metadataFileName,
-	)
-	c.logDebug("=== END METADATA UPLOAD ANALYSIS ===")
 
 	// Try to upload the metadata file using rclone copyto
 	args := []string{"copyto", metadataPath, metadataRemotePath}
