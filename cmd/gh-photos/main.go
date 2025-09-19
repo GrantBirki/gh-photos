@@ -70,7 +70,33 @@ type AssetCounts struct {
 }
 
 func main() {
-	if err := NewRootCommand().Execute(); err != nil {
+	// Create a cancellable context that reacts to SIGINT/SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Graceful interrupt handling: first Ctrl+C triggers cancel; second forces immediate exit
+	interruptChan := make(chan os.Signal, 1)
+	signal.Notify(interruptChan, os.Interrupt, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		first := true
+		for range interruptChan {
+			if first {
+				first = false
+				fmt.Fprintln(os.Stderr, "\n[INFO] Interrupt received. Attempting graceful shutdown (press Ctrl+C again to force).")
+				stop() // cancel context
+			} else {
+				fmt.Fprintln(os.Stderr, "\n[WARN] Force termination requested. Exiting immediately.")
+				os.Exit(130)
+			}
+		}
+	}()
+
+	if err := NewRootCommand().ExecuteContext(ctx); err != nil {
+		// If the context was canceled, use 130 exit code (conventional for SIGINT)
+		if ctx.Err() != nil {
+			os.Exit(130)
+		}
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}

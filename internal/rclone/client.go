@@ -511,6 +511,11 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 
 	// Process each directory group
 	for targetDir, groupEntries := range dirGroups {
+		// Early abort if context cancelled before processing this group
+		if ctx.Err() != nil {
+			c.logDebug("context cancelled before staging directory group", "dir", targetDir)
+			return ctx.Err()
+		}
 		// Normalize target directory path for remote (forward slashes)
 		normalizedDir := strings.ReplaceAll(targetDir, "\\", "/")
 		if normalizedDir == "." || normalizedDir == "" {
@@ -528,6 +533,10 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		// Create directory structure and copy files to temp location
 		filePrepCount := 0
 		for _, entry := range groupEntries {
+			if ctx.Err() != nil {
+				c.logDebug("context cancelled during staging loop", "dir", targetDir)
+				return ctx.Err()
+			}
 			if progressCallback != nil {
 				progressCallback(completed, total, fmt.Sprintf("Preparing %s", filepath.Base(entry.SourcePath)))
 			}
@@ -721,6 +730,10 @@ func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.
 
 	// Otherwise, list each directory separately to be more efficient
 	for dir := range dirs {
+		if ctx.Err() != nil {
+			c.logDebug("context cancelled before directory listing", "dir", dir)
+			return existingFiles, ctx.Err()
+		}
 		remotePath := fmt.Sprintf("%s:%s", c.remote, dir)
 		cmd := exec.CommandContext(ctx, "rclone", "lsf", remotePath, "-R")
 		setupRcloneCmd(cmd)
@@ -762,6 +775,10 @@ func (c *Client) listAllRemoteFiles(ctx context.Context) (map[string]bool, error
 	existingFiles := make(map[string]bool)
 	files := strings.Split(strings.TrimSpace(string(output)), "\n")
 	for _, file := range files {
+		if ctx.Err() != nil {
+			c.logDebug("context cancelled during remote file accumulation", "processed", len(existingFiles))
+			return existingFiles, ctx.Err()
+		}
 		if file != "" {
 			existingFiles[file] = true
 		}
