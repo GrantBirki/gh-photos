@@ -43,7 +43,7 @@ func TestGenerator_CreateManifest(t *testing.T) {
 		},
 	}
 
-	manifest := generator.CreateManifest(assets, "photos")
+	manifest := generator.CreateManifest(assets)
 
 	assert.Equal(t, "/test/backup", manifest.BackupPath)
 	assert.Equal(t, "gdrive:Photos", manifest.RemoteTarget)
@@ -54,7 +54,6 @@ func TestGenerator_CreateManifest(t *testing.T) {
 
 	// Check that target paths are generated correctly
 	for _, entry := range manifest.Entries {
-		assert.Contains(t, entry.TargetPath, "photos/")
 		assert.Contains(t, entry.TargetPath, now.Format("2006"))
 		assert.Contains(t, entry.TargetPath, now.Format("01"))
 		assert.Contains(t, entry.TargetPath, now.Format("02"))

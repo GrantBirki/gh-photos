@@ -141,8 +141,6 @@ gh photos list /path/to/backup
 # Upload to nested folder structure on the remote - This creates: Google Drive/Backups/iPhone/photos/YYYY/MM/DD/
 gh photos sync /path/to/backup GoogleDriveRemote:Backups/iPhone/photos --ignore Thumbnails/*,derivatives/*
 
-# This creates: Google Drive/Photos/family-photos/YYYY/MM/DD/
-gh photos sync /backup GoogleDriveRemote:Photos --root "family-photos"
 ```
 
 ### Advanced Usage Examples
@@ -160,11 +158,6 @@ gh photos sync /backup s3:mybucket/photos \
   --start-date 2023-01-01 \
   --end-date 2023-12-31 \
   --types photos,videos
-
-# Upload to custom root directory (skipping existing files by default)
-gh photos sync /backup GoogleDriveRemote:photos \
-  --root "family-photos" \
-  --verify
 
 # Force overwrite existing files
 gh photos sync /backup GoogleDriveRemote:photos \
@@ -208,7 +201,6 @@ gh photos list /backup \
 | `--verify` | Verify uploaded files match source | `false` |
 | `--checksum` | Compute SHA256 checksums for assets | `false` |
 | `--parallel` | Number of parallel uploads | `4` |
-| `--root` | Root directory prefix for uploads | `photos` |
 | `--save-manifest` | Path to save operation manifest (JSON) | - |
 | `--types` | Asset types to include (photos,videos,screenshots,burst,live_photos) | all |
 | `--start-date` | Start date filter (YYYY-MM-DD) | - |

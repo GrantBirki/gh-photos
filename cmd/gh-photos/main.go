@@ -138,9 +138,6 @@ Examples:
 			config.Remote = args[1]
 
 			// Set root prefix (default to "photos")
-			if config.RootPrefix == "" {
-				config.RootPrefix = "photos"
-			}
 
 			return nil
 		},
@@ -160,7 +157,6 @@ Examples:
 	cmd.Flags().BoolVar(&config.Verify, "verify", false, "verify uploaded files match source")
 	cmd.Flags().BoolVar(&config.ComputeChecksums, "checksum", false, "compute SHA256 checksums for assets")
 	cmd.Flags().IntVar(&config.Parallel, "parallel", 4, "number of parallel uploads")
-	cmd.Flags().StringVar(&config.RootPrefix, "root", "photos", "root directory prefix for uploads")
 	cmd.Flags().StringVar(&config.SaveManifest, "save-manifest", "", "path to save operation manifest (JSON)")
 	cmd.Flags().StringSliceVar(&config.AssetTypes, "types", nil, "comma-separated asset types to include (photos,videos,screenshots,burst,live_photos)")
 	cmd.Flags().StringSliceVar(&config.IgnorePatterns, "ignore", nil, "patterns to ignore (supports wildcards and directory names like 'PhotoData')")
@@ -1110,9 +1106,6 @@ func loadLastCommandConfig(config *uploader.Config, cmd *cobra.Command, args []s
 	if !cmd.Flags().Changed("end-date") && trail.Metadata.Invocation.Flags.EndDate != nil {
 		config.EndDate = trail.Metadata.Invocation.Flags.EndDate
 	}
-	if !cmd.Flags().Changed("root") && trail.Metadata.Invocation.Flags.Root != "" {
-		config.RootPrefix = trail.Metadata.Invocation.Flags.Root
-	}
 	if !cmd.Flags().Changed("verify") {
 		config.Verify = trail.Metadata.Invocation.Flags.Verify
 	}
@@ -1182,9 +1175,6 @@ func buildSyncCommand(invocation audit.Invocation, sourcePath string) string {
 	}
 	if flags.EndDate != nil {
 		parts = append(parts, fmt.Sprintf("--end-date=%s", flags.EndDate.Format("2006-01-02")))
-	}
-	if flags.Root != "" {
-		parts = append(parts, fmt.Sprintf("--root=%s", flags.Root))
 	}
 	if flags.Verify {
 		parts = append(parts, "--verify")

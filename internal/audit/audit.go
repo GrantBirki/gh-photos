@@ -53,7 +53,6 @@ type InvocationFlags struct {
 	Types                  []string   `json:"types"`
 	StartDate              *time.Time `json:"start_date"`
 	EndDate                *time.Time `json:"end_date"`
-	Root                   string     `json:"root,omitempty"`
 	Verify                 bool       `json:"verify,omitempty"`
 	Checksum               bool       `json:"checksum,omitempty"`
 	IgnorePatterns         []string   `json:"ignore_patterns,omitempty"`

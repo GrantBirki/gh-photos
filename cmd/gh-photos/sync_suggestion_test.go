@@ -52,6 +52,7 @@ func TestBuildSyncCommand(t *testing.T) {
 			sourcePath: "/path/to/extracted",
 			expected:   "sync /path/to/extracted gdrive:Photos --types=photo,video --start-date=2023-01-01 --end-date=2023-12-31",
 		},
+		// Root flag removed; comprehensive test updated accordingly
 		{
 			name: "sync command with all flags",
 			invocation: audit.Invocation{
@@ -64,13 +65,12 @@ func TestBuildSyncCommand(t *testing.T) {
 					DryRun:                 true,
 					LogLevel:               "debug",
 					Types:                  []string{"photo"},
-					Root:                   "DCIM",
 					Verify:                 true,
 					Checksum:               true,
 				},
 			},
 			sourcePath: "/path/to/backup",
-			expected:   "sync /path/to/backup dropbox:Photos --include-hidden --include-recently-deleted --parallel=2 --skip-existing --dry-run --log-level=debug --types=photo --root=DCIM --verify --checksum",
+			expected:   "sync /path/to/backup dropbox:Photos --include-hidden --include-recently-deleted --parallel=2 --skip-existing --dry-run --log-level=debug --types=photo --verify --checksum",
 		},
 		{
 			name: "sync command with default parallel (should not include)",

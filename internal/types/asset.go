@@ -59,12 +59,12 @@ func (a *Asset) ShouldExclude(includeHidden, includeRecentlyDeleted bool) bool {
 }
 
 // GenerateTargetPath creates the target path following the YYYY/MM/DD/category structure
-func (a *Asset) GenerateTargetPath(rootPrefix string) string {
+func (a *Asset) GenerateTargetPath() string {
 	year := a.CreationDate.Format("2006")
 	month := a.CreationDate.Format("01")
 	day := a.CreationDate.Format("02")
 
-	path := filepath.Join(rootPrefix, year, month, day, string(a.Type), a.Filename)
+	path := filepath.Join(year, month, day, string(a.Type), a.Filename)
 	return filepath.Clean(path)
 }
 

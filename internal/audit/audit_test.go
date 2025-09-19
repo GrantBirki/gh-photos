@@ -75,7 +75,6 @@ func TestSetInvocation(t *testing.T) {
 		DryRun:                 false,
 		LogLevel:               "info",
 		Types:                  []string{"photos", "videos"},
-		Root:                   "photos",
 	}
 
 	tm.SetInvocation(remote, flags)

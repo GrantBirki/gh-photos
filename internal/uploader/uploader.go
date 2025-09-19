@@ -22,7 +22,6 @@ import (
 type Config struct {
 	BackupPath             string
 	Remote                 string
-	RootPrefix             string
 	IncludeHidden          bool
 	IncludeRecentlyDeleted bool
 	DryRun                 bool
@@ -176,7 +175,7 @@ func (u *Uploader) Execute(ctx context.Context) error {
 	}
 
 	generator := manifest.NewGenerator(u.config.BackupPath, u.config.Remote, manifestConfig)
-	u.manifest = generator.CreateManifest(u.filteredAssets, u.config.RootPrefix)
+	u.manifest = generator.CreateManifest(u.filteredAssets)
 
 	// Create upload plan
 	u.logInfo("Creating upload plan...")
@@ -349,8 +348,8 @@ func (u *Uploader) filterAssets(assets []*types.Asset) []*types.Asset {
 			}
 		}
 
-		// Generate target path
-		asset.TargetPath = asset.GenerateTargetPath(u.config.RootPrefix)
+		// Generate target path (YYYY/MM/DD/type/filename)
+		asset.TargetPath = asset.GenerateTargetPath()
 
 		filtered = append(filtered, asset)
 	}
@@ -509,7 +508,6 @@ func (u *Uploader) setupAuditTrail() error {
 		Types:                  u.config.AssetTypes,
 		StartDate:              u.config.StartDate,
 		EndDate:                u.config.EndDate,
-		Root:                   u.config.RootPrefix,
 		Verify:                 u.config.Verify,
 		Checksum:               u.config.ComputeChecksums,
 		IgnorePatterns:         u.config.IgnorePatterns,

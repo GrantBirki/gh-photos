@@ -90,7 +90,7 @@ func NewGenerator(backupPath, remoteTarget string, config Config) *Generator {
 }
 
 // CreateManifest creates a new manifest from a list of assets
-func (g *Generator) CreateManifest(assets []*types.Asset, rootPrefix string) *Manifest {
+func (g *Generator) CreateManifest(assets []*types.Asset) *Manifest {
 	manifest := &Manifest{
 		GeneratedAt:  time.Now(),
 		BackupPath:   g.backupPath,
@@ -101,8 +101,8 @@ func (g *Generator) CreateManifest(assets []*types.Asset, rootPrefix string) *Ma
 	}
 
 	for _, asset := range assets {
-		// Generate target path
-		targetPath := asset.GenerateTargetPath(rootPrefix)
+		// Generate target path (root prefix removed)
+		targetPath := asset.GenerateTargetPath()
 
 		entry := Entry{
 			SourcePath:   asset.SourcePath,
