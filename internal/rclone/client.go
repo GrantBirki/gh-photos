@@ -2,6 +2,7 @@ package rclone
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -329,6 +330,9 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		cmd := exec.CommandContext(ctx, "rclone", args...)
 		setupRcloneCmd(cmd)
 
+		// Capture stderr for debugging
+		cmd.Stderr = os.Stderr
+
 		// Capture output for progress parsing
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -350,7 +354,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 
 		if err := cmd.Wait(); err != nil {
-			c.logError("rclone batch failed", "error", err, "dir", targetDir, "files", len(groupEntries))
+			c.logError("rclone batch failed", "error", err, "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())
 			// Mark all entries in this batch as failed
 			for _, entry := range groupEntries {
 				// Find original index
@@ -368,7 +372,19 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			return fmt.Errorf("rclone batch upload failed: %w", err)
 		}
 
-		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries))
+		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())
+
+		// After successful upload, verify at least one file from this chunk is visible
+		if len(groupEntries) > 0 {
+			sampleEntry := groupEntries[0]
+			remotePath := c.buildRemotePath(sampleEntry.TargetPath)
+			c.logDebug("verifying sample file visibility", "remote_path", remotePath, "source", sampleEntry.SourcePath)
+			if err := c.verifySingleFileVisibility(remotePath); err != nil {
+				c.logError("sample file verification failed", "error", err, "remote_path", remotePath, "source", sampleEntry.SourcePath)
+				// Don't fail upload - just log the issue for debugging
+			}
+		}
+
 		// Mark all entries in this batch as successful
 		for _, entry := range groupEntries {
 			completed++
@@ -715,6 +731,42 @@ func PrintUploadPlan(plan []UploadPlanEntry) {
 type result struct {
 	index int
 	err   error
+}
+
+// verifySingleFileVisibility checks if a specific file is visible in the remote storage
+func (c *Client) verifySingleFileVisibility(remotePath string) error {
+	if c.dryRun {
+		c.logDebug("dry-run verification skipped", "remote_path", remotePath)
+		return nil
+	}
+
+	// Use rclone lsf to check if the file exists and is visible
+	args := []string{"lsf", remotePath}
+
+	cmd := exec.Command("rclone", args...)
+	c.logDebug("running file visibility check", "command", cmd.String(), "args", args)
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	if err != nil {
+		stderrStr := stderr.String()
+		stdoutStr := stdout.String()
+		c.logError("file visibility check failed", "error", err, "stderr", stderrStr, "stdout", stdoutStr, "remote_path", remotePath)
+		return fmt.Errorf("file visibility check failed for %s: %w (stderr: %s)", remotePath, err, stderrStr)
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		c.logError("file not visible after upload", "remote_path", remotePath)
+		return fmt.Errorf("file not visible in remote storage: %s", remotePath)
+	}
+
+	c.logDebug("file visibility confirmed", "remote_path", remotePath, "output", output)
+	return nil
 }
 
 // humanizeBytes converts bytes to human readable format
