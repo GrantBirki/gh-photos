@@ -1,6 +1,7 @@
 package rclone
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -70,38 +71,169 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	return nil
 }
 
-// UploadBatch uploads multiple entries in parallel
-func (c *Client) UploadBatch(ctx context.Context, entries []manifest.Entry, updateCallback func(int, manifest.OperationStatus, string)) error {
+// ProgressCallback provides upload progress updates
+type ProgressCallback func(completed, total int, currentFile string)
+
+// UploadBatch uploads multiple entries using efficient batch operations with progress reporting
+// This single method handles all upload operations regardless of dataset size for optimal performance
+func (c *Client) UploadBatch(ctx context.Context, entries []manifest.Entry, updateCallback func(int, manifest.OperationStatus, string), progressCallback ProgressCallback) error {
 	if len(entries) == 0 {
 		return nil
 	}
-
-	// Create a semaphore to limit concurrent uploads
-	semaphore := make(chan struct{}, c.parallel)
-	results := make(chan result, len(entries))
-
-	// Start uploads
-	for i, entry := range entries {
-		go func(index int, e manifest.Entry) {
-			semaphore <- struct{}{}        // Acquire
-			defer func() { <-semaphore }() // Release
-
-			err := c.UploadEntry(ctx, e)
-			results <- result{index: index, err: err}
-		}(i, entry)
+	// Handle dry run mode - just report what would be uploaded
+	if c.dryRun {
+		for i, entry := range entries {
+			if progressCallback != nil {
+				progressCallback(i, len(entries), filepath.Base(entry.SourcePath))
+			}
+			fmt.Printf("[DRY-RUN] Would upload: %s -> %s:%s\n",
+				entry.SourcePath, c.remote, entry.TargetPath)
+			updateCallback(i, manifest.StatusUploaded, "")
+		}
+		if progressCallback != nil {
+			progressCallback(len(entries), len(entries), "")
+		}
+		return nil
 	}
 
-	// Collect results
-	for i := 0; i < len(entries); i++ {
-		select {
-		case res := <-results:
-			if res.err != nil {
-				updateCallback(res.index, manifest.StatusFailed, res.err.Error())
-			} else {
-				updateCallback(res.index, manifest.StatusUploaded, "")
+	// Determine optimal chunk size based on dataset size for better progress feedback
+	chunkSize := 200 // Default chunk size for good progress reporting
+	if len(entries) <= 50 {
+		chunkSize = len(entries) // Single chunk for small datasets
+	} else if len(entries) <= 500 {
+		chunkSize = 100 // Medium chunks for moderate datasets
+	}
+
+	// Process entries in chunks
+	for i := 0; i < len(entries); i += chunkSize {
+		end := i + chunkSize
+		if end > len(entries) {
+			end = len(entries)
+		}
+
+		chunk := entries[i:end]
+		if err := c.uploadChunk(ctx, chunk, entries, i, updateCallback, progressCallback); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// uploadChunk handles uploading a chunk of entries efficiently using rclone batch operations
+func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEntries []manifest.Entry, baseIndex int, updateCallback func(int, manifest.OperationStatus, string), progressCallback ProgressCallback) error {
+	// Group entries by target directory to optimize rclone calls
+	dirGroups := make(map[string][]manifest.Entry)
+	for _, entry := range chunk {
+		dir := filepath.Dir(entry.TargetPath)
+		if dir == "." {
+			dir = ""
+		}
+		dirGroups[dir] = append(dirGroups[dir], entry)
+	}
+
+	completed := baseIndex
+	total := len(allEntries)
+
+	// Process each directory group
+	for targetDir, groupEntries := range dirGroups {
+		// Create temporary directory for this batch
+		tempDir, err := os.MkdirTemp("", "gh-photos-batch-*")
+		if err != nil {
+			return fmt.Errorf("failed to create temp directory: %w", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		// Create directory structure and copy files to temp location
+		for _, entry := range groupEntries {
+			if progressCallback != nil {
+				progressCallback(completed, total, fmt.Sprintf("Preparing %s", filepath.Base(entry.SourcePath)))
 			}
-		case <-ctx.Done():
-			return ctx.Err()
+
+			// Create target directory structure in temp
+			tempTargetPath := filepath.Join(tempDir, entry.TargetPath)
+			if err := os.MkdirAll(filepath.Dir(tempTargetPath), 0755); err != nil {
+				return fmt.Errorf("failed to create temp directory structure: %w", err)
+			}
+
+			// Create symlink to avoid copying large files
+			if err := os.Symlink(entry.SourcePath, tempTargetPath); err != nil {
+				return fmt.Errorf("failed to create symlink: %w", err)
+			}
+		}
+
+		// Build rclone command for batch upload
+		args := []string{"copy", tempDir, fmt.Sprintf("%s:%s", c.remote, targetDir)}
+
+		if c.skipExisting {
+			args = append(args, "--ignore-existing")
+		}
+
+		if c.verify {
+			args = append(args, "--check-first")
+		}
+
+		// Add progress reporting
+		args = append(args, "--progress", "--stats-one-line")
+
+		// Execute batch rclone command
+		cmd := exec.CommandContext(ctx, "rclone", args...)
+
+		// Capture output for progress parsing
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return fmt.Errorf("failed to create stdout pipe: %w", err)
+		}
+
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("failed to start rclone: %w", err)
+		}
+
+		// Parse progress output
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if progressCallback != nil && strings.Contains(line, "Transferred:") {
+				progressCallback(completed, total, fmt.Sprintf("Uploading batch (%d files)", len(groupEntries)))
+			}
+		}
+
+		if err := cmd.Wait(); err != nil {
+			// Mark all entries in this batch as failed
+			for _, entry := range groupEntries {
+				// Find original index
+				originalIndex := -1
+				for j, originalEntry := range allEntries {
+					if originalEntry.SourcePath == entry.SourcePath {
+						originalIndex = j
+						break
+					}
+				}
+				if originalIndex >= 0 {
+					updateCallback(originalIndex, manifest.StatusFailed, fmt.Sprintf("batch upload failed: %v", err))
+				}
+			}
+			return fmt.Errorf("rclone batch upload failed: %w", err)
+		}
+
+		// Mark all entries in this batch as successful
+		for _, entry := range groupEntries {
+			completed++
+			// Find original index
+			originalIndex := -1
+			for j, originalEntry := range allEntries {
+				if originalEntry.SourcePath == entry.SourcePath {
+					originalIndex = j
+					break
+				}
+			}
+			if originalIndex >= 0 {
+				updateCallback(originalIndex, manifest.StatusUploaded, "")
+			}
+
+			if progressCallback != nil {
+				progressCallback(completed, total, filepath.Base(entry.SourcePath))
+			}
 		}
 	}
 

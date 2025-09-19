@@ -43,13 +43,14 @@ type Config struct {
 
 // Uploader orchestrates the photo backup process
 type Uploader struct {
-	config         Config
-	logger         *logger.Logger
-	parser         *backup.BackupParser
-	rcloneClient   *rclone.Client
-	manifest       *manifest.Manifest
-	auditTrail     *audit.TrailManager
-	filteredAssets []*types.Asset // Store filtered assets for audit trail
+	config          Config
+	logger          *logger.Logger
+	parser          *backup.BackupParser
+	rcloneClient    *rclone.Client
+	manifest        *manifest.Manifest
+	auditTrail      *audit.TrailManager
+	filteredAssets  []*types.Asset // Store filtered assets for audit trail
+	uploadStartTime time.Time      // Track upload start time for ETA calculations
 }
 
 // NewUploader creates a new uploader instance
@@ -207,12 +208,19 @@ func (u *Uploader) Execute(ctx context.Context) error {
 			}
 		}
 
-		// Execute uploads
+		// Execute uploads with progress reporting
 		if len(uploadEntries) > 0 {
-			err := u.rcloneClient.UploadBatch(ctx, uploadEntries, u.updateManifestCallback)
+			u.uploadStartTime = time.Now()
+			u.logInfo("Uploading %d files...", len(uploadEntries))
+			err := u.rcloneClient.UploadBatch(ctx, uploadEntries, u.updateManifestCallback, u.uploadProgressCallback)
 			if err != nil {
 				return fmt.Errorf("upload failed: %w", err)
 			}
+
+			// Log upload performance summary
+			uploadDuration := time.Since(u.uploadStartTime)
+			filesPerSecond := float64(len(uploadEntries)) / uploadDuration.Seconds()
+			u.logSuccess("Upload completed in %v (%.1f files/sec)", uploadDuration.Round(time.Second), filesPerSecond)
 		}
 
 		// Verify uploads if requested
@@ -379,6 +387,39 @@ func (u *Uploader) computeChecksums(assets []*types.Asset) error {
 		}
 	}
 	return nil
+}
+
+// uploadProgressCallback provides real-time upload progress updates
+func (u *Uploader) uploadProgressCallback(completed, total int, currentFile string) {
+	percentage := float64(completed) / float64(total) * 100
+
+	// Always show progress for uploads (not just in verbose mode)
+	if completed == total {
+		u.logSuccess("Upload completed: %d/%d files (100.0%%)", completed, total)
+	} else if completed%50 == 0 || completed == 1 || (completed%10 == 0 && total <= 100) || total-completed <= 5 {
+		// Show progress based on total files:
+		// - Every 50 files for large batches (>100 files)
+		// - Every 10 files for smaller batches (<=100 files)
+		// - Always show first file and last 5 files
+		if total > 1000 {
+			// For very large uploads, show estimated time remaining
+			if completed > 10 {
+				// Simple ETA calculation based on average time per file
+				averageTime := time.Since(u.uploadStartTime) / time.Duration(completed)
+				remaining := time.Duration(total-completed) * averageTime
+				u.logInfo("Upload progress: %d/%d files (%.1f%%) - ETA: %v", completed, total, percentage, remaining.Round(time.Second))
+			} else {
+				u.logInfo("Upload progress: %d/%d files (%.1f%%)", completed, total, percentage)
+			}
+		} else {
+			u.logInfo("Upload progress: %d/%d files (%.1f%%) - %s", completed, total, percentage, currentFile)
+		}
+	}
+
+	// In verbose mode, show every file
+	if u.config.Verbose && currentFile != "" && completed < total {
+		u.logInfo("Uploading: %s (%d/%d)", currentFile, completed+1, total)
+	}
 }
 
 // updateManifestCallback updates the manifest when an upload completes
