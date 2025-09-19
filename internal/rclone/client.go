@@ -816,52 +816,51 @@ func ValidateRemoteAuthentication(remote string, log *logger.Logger) error {
 
 // CreateUploadPlan creates a plan for uploading assets
 func (c *Client) CreateUploadPlan(ctx context.Context, entries []manifest.Entry) ([]UploadPlanEntry, error) {
-	plan := make([]UploadPlanEntry, 0, len(entries))
+	// Special handling for the metadata file: always upload if not existing, don't skip
+	metadataPath := c.findExtractionMetadataFile()
+	if metadataPath != "" {
+		c.logDebug("found metadata file", "path", metadataPath)
 
-	// Pre-scan remote for existing files if enabled
-	var existingFiles map[string]bool
-	if c.skipExisting && c.remotePreScan {
-		existingFiles = c.performRemotePreScan(ctx, entries)
+		// Get timestamp for metadata file naming
+		timestamp, err := c.getTimestampFromMetadata(metadataPath)
+		if err != nil {
+			c.logWarn("failed to get timestamp from metadata file", "error", err)
+			timestamp = time.Now().UTC().Format("2006-01-02T15-04-05Z")
+		}
+
+		// Define remote path for metadata file
+		remoteMetadataPath := c.buildRemotePath("metadata/extraction-metadata-" + timestamp + ".json")
+
+		// Since remotePreScan is disabled, we cannot check for existing files here.
+		// We will rely on rclone's --ignore-existing flag during the copy operation.
+		c.logDebug("uploading metadata file to remote", "local_path", metadataPath, "remote_path", remoteMetadataPath)
+		cmd := exec.CommandContext(ctx, "rclone", "copyto", "--ignore-existing", metadataPath, remoteMetadataPath)
+		setupRcloneCmd(cmd)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			c.logError("failed to upload metadata file", "error", err, "output", string(output))
+			// We can continue without the metadata file, so we just log the error.
+		} else {
+			c.logDebug("successfully uploaded metadata file")
+		}
 	}
 
-	// Process each entry
-	for i, entry := range entries {
+	// Create the upload plan
+	var planEntries []UploadPlanEntry
+
+	// Populate the upload plan
+	for _, entry := range entries {
 		planEntry := UploadPlanEntry{
 			Entry:  entry,
 			Action: ActionUpload,
 		}
 
-		if c.skipExisting {
-			var exists bool
-
-			if existingFiles != nil { // only when remotePreScan enabled
-				// Use batch result
-				exists = existingFiles[entry.TargetPath]
-			} else {
-				// No pre-scan: rely on rclone runtime --ignore-existing behavior later.
-				// We don't perform per-file lsf checks to avoid extra API calls.
-			}
-
-			if exists {
-				planEntry.Action = ActionSkip
-				if c.logger != nil && c.logLevel == "debug" {
-					c.logger.Debug("Skipping existing file",
-						"file", filepath.Base(entry.SourcePath),
-						"remote", c.remote,
-						"target", entry.TargetPath)
-				}
-			}
-		}
-
-		plan = append(plan, planEntry)
-
-		// Progress reporting for large uploads
-		if c.logger != nil && len(entries) > 100 && (i+1)%500 == 0 && c.remotePreScan {
-			c.logger.Info("Upload plan progress", "processed", i+1, "total", len(entries))
-		}
+		// Since remotePreScan is disabled, we assume all files need to be uploaded.
+		// rclone's --ignore-existing will handle skipping at runtime.
+		planEntries = append(planEntries, planEntry)
 	}
 
-	return plan, nil
+	return planEntries, nil
 }
 
 // UploadAction represents the action to take for an upload
@@ -879,6 +878,12 @@ type UploadPlanEntry struct {
 	Action UploadAction   `json:"action"`
 	Error  string         `json:"error,omitempty"`
 }
+
+// UploadPlan represents a collection of upload plan entries
+type UploadPlan struct {
+	Entries []UploadPlanEntry `json:"entries"`
+}
+
 
 // PrintUploadPlan prints a human-readable upload plan
 func PrintUploadPlan(plan []UploadPlanEntry) {
