@@ -129,14 +129,14 @@ func TestMetadataUploadDryRun(t *testing.T) {
 	client := NewClient("test-remote:", 1, false, true, false, l, "debug")
 
 	// Test dry run - should skip upload
-	err := client.testRemoteWriteCapability("test-remote:")
+	err := client.testRemoteWriteCapabilityStartup()
 	if err != nil {
 		t.Errorf("Expected no error in dry run mode, got: %v", err)
 	}
 
 	// Check logs contain expected dry run message
 	logOutput := logBuffer.String()
-	if !containsString(logOutput, "dry-run write capability test skipped") {
+	if !containsString(logOutput, "dry-run write capability test skipped during startup") {
 		t.Error("Expected dry-run write capability skip message in logs")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,18 +18,17 @@ import (
 
 // Client wraps rclone operations
 type Client struct {
-	remote        string
-	parallel      int
-	verify        bool
-	dryRun        bool
-	skipExisting  bool
-	remotePreScan bool
-	logger        *logger.Logger
-	logLevel      string
-	backupPath    string // Added to support metadata file discovery
-}
-
-// buildRemotePath safely constructs a remote destination path ensuring only one colon
+	remote              string
+	parallel            int
+	verify              bool
+	dryRun              bool
+	skipExisting        bool
+	remotePreScan       bool
+	logger              *logger.Logger
+	logLevel            string
+	backupPath          string // Added to support metadata file discovery
+	startupTestComplete bool   // Track if startup connectivity test has been done
+} // buildRemotePath safely constructs a remote destination path ensuring only one colon
 // between remote name and path, normalizing slashes and removing duplicate separators.
 func (c *Client) buildRemotePath(subPath string) string {
 	spec := c.remote
@@ -135,15 +135,16 @@ func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, l
 		preScan = remotePreScan[0]
 	}
 	c := &Client{
-		remote:        remote,
-		parallel:      parallel,
-		verify:        verify,
-		dryRun:        dryRun,
-		skipExisting:  skipExisting,
-		remotePreScan: preScan,
-		logger:        logger,
-		logLevel:      logLevel,
-		backupPath:    "", // Will be set later via SetBackupPath if needed
+		remote:              remote,
+		parallel:            parallel,
+		verify:              verify,
+		dryRun:              dryRun,
+		skipExisting:        skipExisting,
+		remotePreScan:       preScan,
+		logger:              logger,
+		logLevel:            logLevel,
+		backupPath:          "", // Will be set later via SetBackupPath if needed
+		startupTestComplete: false,
 	}
 	c.logDebug("rclone client created",
 		"remote", remote,
@@ -162,6 +163,39 @@ func (c *Client) SetBackupPath(backupPath string) {
 	c.backupPath = backupPath
 }
 
+// RunStartupConnectivityTest runs comprehensive connectivity tests at startup
+func (c *Client) RunStartupConnectivityTest() error {
+	if c.startupTestComplete {
+		c.logDebug("startup connectivity test already completed, skipping")
+		return nil
+	}
+
+	c.logInfo("running startup connectivity tests...")
+
+	// Test 1: Basic remote connectivity
+	baseRemote := c.remote
+	if strings.Contains(c.remote, ":") && !strings.HasSuffix(c.remote, ":") {
+		baseRemote = c.remote[:strings.Index(c.remote, ":")+1]
+	} else if !strings.HasSuffix(c.remote, ":") {
+		baseRemote = c.remote + ":"
+	}
+
+	c.logDebug("testing base remote connectivity", "base_remote", baseRemote)
+	if err := c.testRemoteConnectivity(baseRemote); err != nil {
+		return fmt.Errorf("base remote connectivity test failed: %w", err)
+	}
+
+	// Test 2: Upload extraction metadata to verify write capability
+	if err := c.testRemoteWriteCapabilityStartup(); err != nil {
+		c.logWarn("extraction metadata upload test failed", "error", err)
+		// Don't fail startup on metadata upload failure - it's just a diagnostic
+	}
+
+	c.startupTestComplete = true
+	c.logInfo("startup connectivity tests completed successfully")
+	return nil
+}
+
 // findExtractionMetadataFile looks for extraction-metadata.json in the backup path
 func (c *Client) findExtractionMetadataFile() string {
 	if c.backupPath == "" {
@@ -177,7 +211,37 @@ func (c *Client) findExtractionMetadataFile() string {
 	return ""
 }
 
-// UploadEntry uploads a single manifest entry
+// getTimestampFromMetadata reads the completed_at timestamp from extraction metadata file
+func (c *Client) getTimestampFromMetadata(metadataPath string) (string, error) {
+	data, err := os.ReadFile(metadataPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read metadata file: %w", err)
+	}
+
+	// Parse JSON to extract command_metadata.completed_at
+	var metadata struct {
+		CommandMetadata struct {
+			CompletedAt string `json:"completed_at"`
+		} `json:"command_metadata"`
+	}
+
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return "", fmt.Errorf("failed to parse metadata JSON: %w", err)
+	}
+
+	if metadata.CommandMetadata.CompletedAt == "" {
+		return "", fmt.Errorf("completed_at not found in metadata")
+	}
+
+	// Parse the RFC3339 timestamp and convert to our desired format
+	parsedTime, err := time.Parse(time.RFC3339, metadata.CommandMetadata.CompletedAt)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse completed_at timestamp: %w", err)
+	}
+
+	// Convert to our filename format
+	return parsedTime.Format("2006-01-02T15-04-05Z"), nil
+} // UploadEntry uploads a single manifest entry
 func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	if c.dryRun {
 		fmt.Printf("[DRY-RUN] Would upload: %s -> %s:%s\n",
@@ -422,11 +486,8 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 				c.logError("target directory listing failed", "error", err, "target_dir", targetDirPath)
 			}
 
-			// Test 3: Try to upload extraction metadata to verify the remote is writable
-			c.logDebug("testing remote write capability with extraction metadata", "base_remote", baseRemote)
-			if err := c.testRemoteWriteCapability(baseRemote); err != nil {
-				c.logError("extraction metadata upload test failed", "error", err, "base_remote", baseRemote)
-			}
+			// Test 3: Write capability testing moved to startup phase
+			// See RunStartupConnectivityTest() for metadata upload testing
 
 			// Test 4: Verify specific file visibility
 			c.logDebug("verifying sample file visibility", "remote_path", remotePath, "source", sampleEntry.SourcePath)
@@ -813,32 +874,32 @@ func (c *Client) testRemoteConnectivity(baseRemote string) error {
 	return nil
 }
 
-// testRemoteWriteCapability tests if we can write the extraction metadata file to the remote
-func (c *Client) testRemoteWriteCapability(baseRemote string) error {
+// testRemoteWriteCapabilityStartup tests remote write capability during startup using extraction metadata
+func (c *Client) testRemoteWriteCapabilityStartup() error {
 	if c.dryRun {
-		c.logDebug("dry-run write capability test skipped", "base_remote", baseRemote)
+		c.logDebug("dry-run write capability test skipped during startup")
 		return nil
 	}
 
 	// Find the extraction-metadata.json file from the backup path
-	// We need to get this from the uploader config - for now, we'll create a minimal test
 	metadataPath := c.findExtractionMetadataFile()
 	if metadataPath == "" {
 		c.logDebug("no extraction metadata file found, skipping write capability test")
 		return nil
 	}
 
-	// Create timestamped metadata filename
-	timestamp := time.Now().UTC().Format("2006-01-02T15-04-05Z")
+	// Get timestamp from the metadata file's completed_at field
+	timestamp, err := c.getTimestampFromMetadata(metadataPath)
+	if err != nil {
+		c.logWarn("failed to get timestamp from metadata, using current time", "error", err)
+		timestamp = time.Now().UTC().Format("2006-01-02T15-04-05Z")
+	}
+
 	metadataFileName := fmt.Sprintf("extraction-metadata-%s.json", timestamp)
 
-	// Construct remote path: baseRemote + metadata/ + filename
-	var metadataRemotePath string
-	if strings.HasSuffix(baseRemote, ":") {
-		metadataRemotePath = baseRemote + "metadata/" + metadataFileName
-	} else {
-		metadataRemotePath = baseRemote + "/metadata/" + metadataFileName
-	}
+	// Construct remote path: use the target remote path + metadata/ + filename
+	// This puts metadata under the same path as the uploaded photos
+	metadataRemotePath := c.buildRemotePath("metadata/" + metadataFileName)
 
 	c.logDebug("uploading extraction metadata to remote", "local_path", metadataPath, "remote_path", metadataRemotePath)
 
@@ -852,7 +913,7 @@ func (c *Client) testRemoteWriteCapability(baseRemote string) error {
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err = cmd.Run()
 
 	if err != nil {
 		stderrStr := stderr.String()
@@ -882,9 +943,7 @@ func (c *Client) testRemoteWriteCapability(baseRemote string) error {
 	c.logInfo("extraction metadata backup created", "remote_path", metadataRemotePath)
 
 	return nil
-}
-
-// listRemoteDirectory lists the contents of a remote directory for debugging
+} // listRemoteDirectory lists the contents of a remote directory for debugging
 func (c *Client) listRemoteDirectory(remoteDirPath string) error {
 	if c.dryRun {
 		c.logDebug("dry-run directory listing skipped", "remote_dir", remoteDirPath)
