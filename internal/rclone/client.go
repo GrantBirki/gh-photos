@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/grantbirki/gh-photos/internal/logger"
 	"github.com/grantbirki/gh-photos/internal/manifest"
@@ -24,6 +25,7 @@ type Client struct {
 	remotePreScan bool
 	logger        *logger.Logger
 	logLevel      string
+	backupPath    string // Added to support metadata file discovery
 }
 
 // buildRemotePath safely constructs a remote destination path ensuring only one colon
@@ -141,6 +143,7 @@ func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, l
 		remotePreScan: preScan,
 		logger:        logger,
 		logLevel:      logLevel,
+		backupPath:    "", // Will be set later via SetBackupPath if needed
 	}
 	c.logDebug("rclone client created",
 		"remote", remote,
@@ -152,6 +155,26 @@ func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, l
 		"log_level", logLevel,
 	)
 	return c
+}
+
+// SetBackupPath sets the backup path for metadata file discovery
+func (c *Client) SetBackupPath(backupPath string) {
+	c.backupPath = backupPath
+}
+
+// findExtractionMetadataFile looks for extraction-metadata.json in the backup path
+func (c *Client) findExtractionMetadataFile() string {
+	if c.backupPath == "" {
+		return ""
+	}
+
+	metadataPath := filepath.Join(c.backupPath, "extraction-metadata.json")
+	if _, err := os.Stat(metadataPath); err == nil {
+		return metadataPath
+	}
+
+	// If not found, return empty string
+	return ""
 }
 
 // UploadEntry uploads a single manifest entry
@@ -374,18 +397,44 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 
 		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())
 
-		// After successful upload, verify at least one file from this chunk is visible
+		// After successful upload, run comprehensive diagnostics
 		if len(groupEntries) > 0 {
 			sampleEntry := groupEntries[0]
 			remotePath := c.buildRemotePath(sampleEntry.TargetPath)
+			c.logDebug("running post-upload diagnostics", "sample_remote_path", remotePath, "source", sampleEntry.SourcePath)
+
+			// Test 1: Check if the base remote directory exists
+			baseRemote := c.remote
+			if strings.Contains(c.remote, ":") && !strings.HasSuffix(c.remote, ":") {
+				baseRemote = c.remote[:strings.Index(c.remote, ":")+1]
+			} else if !strings.HasSuffix(c.remote, ":") {
+				baseRemote = c.remote + ":"
+			}
+			c.logDebug("testing base remote connectivity", "base_remote", baseRemote)
+			if err := c.testRemoteConnectivity(baseRemote); err != nil {
+				c.logError("base remote connectivity test failed", "error", err, "base_remote", baseRemote)
+			}
+
+			// Test 2: List what actually exists in the target directory
+			targetDirPath := filepath.Dir(remotePath)
+			c.logDebug("listing target directory contents", "target_dir", targetDirPath)
+			if err := c.listRemoteDirectory(targetDirPath); err != nil {
+				c.logError("target directory listing failed", "error", err, "target_dir", targetDirPath)
+			}
+
+			// Test 3: Try to upload extraction metadata to verify the remote is writable
+			c.logDebug("testing remote write capability with extraction metadata", "base_remote", baseRemote)
+			if err := c.testRemoteWriteCapability(baseRemote); err != nil {
+				c.logError("extraction metadata upload test failed", "error", err, "base_remote", baseRemote)
+			}
+
+			// Test 4: Verify specific file visibility
 			c.logDebug("verifying sample file visibility", "remote_path", remotePath, "source", sampleEntry.SourcePath)
 			if err := c.verifySingleFileVisibility(remotePath); err != nil {
 				c.logError("sample file verification failed", "error", err, "remote_path", remotePath, "source", sampleEntry.SourcePath)
 				// Don't fail upload - just log the issue for debugging
 			}
-		}
-
-		// Mark all entries in this batch as successful
+		} // Mark all entries in this batch as successful
 		for _, entry := range groupEntries {
 			completed++
 			// Find original index
@@ -733,6 +782,143 @@ type result struct {
 	err   error
 }
 
+// testRemoteConnectivity tests basic connectivity to the remote storage
+func (c *Client) testRemoteConnectivity(baseRemote string) error {
+	if c.dryRun {
+		c.logDebug("dry-run connectivity test skipped", "base_remote", baseRemote)
+		return nil
+	}
+
+	// Use rclone lsd to test basic connectivity (list directories)
+	args := []string{"lsd", baseRemote}
+
+	cmd := exec.Command("rclone", args...)
+	c.logDebug("testing remote connectivity", "command", cmd.String())
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	if err != nil {
+		stderrStr := stderr.String()
+		stdoutStr := stdout.String()
+		c.logError("remote connectivity test failed", "error", err, "stderr", stderrStr, "stdout", stdoutStr, "base_remote", baseRemote)
+		return fmt.Errorf("remote connectivity test failed for %s: %w (stderr: %s)", baseRemote, err, stderrStr)
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	c.logDebug("remote connectivity confirmed", "base_remote", baseRemote, "directories", output)
+	return nil
+}
+
+// testRemoteWriteCapability tests if we can write the extraction metadata file to the remote
+func (c *Client) testRemoteWriteCapability(baseRemote string) error {
+	if c.dryRun {
+		c.logDebug("dry-run write capability test skipped", "base_remote", baseRemote)
+		return nil
+	}
+
+	// Find the extraction-metadata.json file from the backup path
+	// We need to get this from the uploader config - for now, we'll create a minimal test
+	metadataPath := c.findExtractionMetadataFile()
+	if metadataPath == "" {
+		c.logDebug("no extraction metadata file found, skipping write capability test")
+		return nil
+	}
+
+	// Create timestamped metadata filename
+	timestamp := time.Now().UTC().Format("2006-01-02T15-04-05Z")
+	metadataFileName := fmt.Sprintf("extraction-metadata-%s.json", timestamp)
+
+	// Construct remote path: baseRemote + metadata/ + filename
+	var metadataRemotePath string
+	if strings.HasSuffix(baseRemote, ":") {
+		metadataRemotePath = baseRemote + "metadata/" + metadataFileName
+	} else {
+		metadataRemotePath = baseRemote + "/metadata/" + metadataFileName
+	}
+
+	c.logDebug("uploading extraction metadata to remote", "local_path", metadataPath, "remote_path", metadataRemotePath)
+
+	// Try to upload the metadata file using rclone copyto
+	args := []string{"copyto", metadataPath, metadataRemotePath}
+
+	cmd := exec.Command("rclone", args...)
+	c.logDebug("testing remote write capability with extraction metadata", "command", cmd.String())
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	if err != nil {
+		stderrStr := stderr.String()
+		stdoutStr := stdout.String()
+		c.logError("extraction metadata upload failed", "error", err, "stderr", stderrStr, "stdout", stdoutStr, "remote_path", metadataRemotePath)
+		return fmt.Errorf("extraction metadata upload failed for %s: %w (stderr: %s)", metadataRemotePath, err, stderrStr)
+	}
+
+	c.logDebug("extraction metadata upload successful", "remote_path", metadataRemotePath)
+
+	// Try to verify the metadata file exists
+	verifyArgs := []string{"lsf", metadataRemotePath}
+	verifyCmd := exec.Command("rclone", verifyArgs...)
+
+	var verifyStdout, verifyStderr bytes.Buffer
+	verifyCmd.Stdout = &verifyStdout
+	verifyCmd.Stderr = &verifyStderr
+
+	verifyErr := verifyCmd.Run()
+	if verifyErr != nil {
+		c.logError("extraction metadata verification failed", "error", verifyErr, "stderr", verifyStderr.String(), "remote_path", metadataRemotePath)
+	} else {
+		c.logDebug("extraction metadata verification successful", "remote_path", metadataRemotePath, "output", strings.TrimSpace(verifyStdout.String()))
+	}
+
+	// Don't clean up the metadata file - it's useful to keep!
+	c.logInfo("extraction metadata backup created", "remote_path", metadataRemotePath)
+
+	return nil
+}
+
+// listRemoteDirectory lists the contents of a remote directory for debugging
+func (c *Client) listRemoteDirectory(remoteDirPath string) error {
+	if c.dryRun {
+		c.logDebug("dry-run directory listing skipped", "remote_dir", remoteDirPath)
+		return nil
+	}
+
+	// Use rclone lsl to list files with details
+	args := []string{"lsl", remoteDirPath}
+
+	cmd := exec.Command("rclone", args...)
+	c.logDebug("listing remote directory", "command", cmd.String())
+
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	if err != nil {
+		stderrStr := stderr.String()
+		stdoutStr := stdout.String()
+		c.logError("remote directory listing failed", "error", err, "stderr", stderrStr, "stdout", stdoutStr, "remote_dir", remoteDirPath)
+		return fmt.Errorf("remote directory listing failed for %s: %w (stderr: %s)", remoteDirPath, err, stderrStr)
+	}
+
+	output := strings.TrimSpace(stdout.String())
+	if output == "" {
+		c.logWarn("remote directory is empty or doesn't exist", "remote_dir", remoteDirPath)
+	} else {
+		c.logDebug("remote directory contents", "remote_dir", remoteDirPath, "files", output)
+	}
+	return nil
+}
+
 // verifySingleFileVisibility checks if a specific file is visible in the remote storage
 func (c *Client) verifySingleFileVisibility(remotePath string) error {
 	if c.dryRun {
@@ -767,9 +953,7 @@ func (c *Client) verifySingleFileVisibility(remotePath string) error {
 
 	c.logDebug("file visibility confirmed", "remote_path", remotePath, "output", output)
 	return nil
-}
-
-// humanizeBytes converts bytes to human readable format
+} // humanizeBytes converts bytes to human readable format
 func humanizeBytes(bytes int64) string {
 	const unit = 1024
 	if bytes < unit {

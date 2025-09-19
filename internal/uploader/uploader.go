@@ -101,6 +101,9 @@ func NewUploader(config Config) (*Uploader, error) {
 		config.RemotePreScan,
 	)
 
+	// Set backup path for metadata file discovery
+	rcloneClient.SetBackupPath(config.BackupPath)
+
 	// Create audit trail manager
 	auditTrail, err := audit.NewTrailManager(version.String())
 	if err != nil {
