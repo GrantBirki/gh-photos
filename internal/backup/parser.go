@@ -161,11 +161,17 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 		var validAssets []*types.Asset
 		for _, asset := range bp.extractedAssets {
 			if err := bp.enrichAsset(asset); err != nil {
-				// Log warning but continue processing
+				// Check if this might be in a derivatives or ignored directory
+				if strings.Contains(asset.SourcePath, "derivatives") ||
+					strings.Contains(asset.SourcePath, "Thumbnails") ||
+					strings.Contains(asset.SourcePath, "PhotoData") {
+					// Silently skip files in likely-ignored directories to reduce noise
+					continue
+				}
+				// Log warning but continue processing for other files
 				fmt.Fprintf(os.Stderr, "Warning: failed to enrich asset %s: %v\n", asset.Filename, err)
 				continue
 			}
-
 			if asset.IsValid() {
 				validAssets = append(validAssets, asset)
 			}
@@ -183,7 +189,14 @@ func (bp *BackupParser) ParseAssets() ([]*types.Asset, error) {
 	var validAssets []*types.Asset
 	for _, asset := range assets {
 		if err := bp.enrichAsset(asset); err != nil {
-			// Log warning but continue processing
+			// Check if this might be in a derivatives or ignored directory
+			if strings.Contains(asset.SourcePath, "derivatives") ||
+				strings.Contains(asset.SourcePath, "Thumbnails") ||
+				strings.Contains(asset.SourcePath, "PhotoData") {
+				// Silently skip files in likely-ignored directories to reduce noise
+				continue
+			}
+			// Log warning but continue processing for other files
 			fmt.Fprintf(os.Stderr, "Warning: failed to enrich asset %s: %v\n", asset.Filename, err)
 			continue
 		}
@@ -542,10 +555,11 @@ func findMediaDomain(backupPath string) string {
 
 // findFileInDCIM searches for a specific filename in the DCIM directory structure
 func findFileInDCIM(backupPath, mediaDomain, filename string) string {
-	// Try different DCIM path structures
+	// Try different DCIM path structures, including deeper PhotoData paths
 	dcimPaths := []string{
 		filepath.Join(backupPath, mediaDomain, "Media", "DCIM"),
 		filepath.Join(backupPath, mediaDomain, "DCIM"),
+		filepath.Join(backupPath, mediaDomain, "Media", "PhotoData"), // Add PhotoData search
 	}
 
 	for _, dcimPath := range dcimPaths {
