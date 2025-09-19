@@ -305,9 +305,23 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	// Execute rclone command
 	cmd := exec.CommandContext(ctx, "rclone", args...)
 	setupRcloneCmd(cmd)
-	cmd.Stderr = os.Stderr
+
+	// Capture stderr to avoid direct terminal output after cancellation
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Run(); err != nil {
+		// Log stderr output for debugging
+		if stderrOutput := stderrBuf.String(); stderrOutput != "" {
+			c.logError("rclone stderr output", "stderr", stderrOutput)
+		}
+
+		// Check if error was due to context cancellation
+		if ctx.Err() != nil {
+			c.logDebug("single upload cancelled", "source", entry.SourcePath, "context_err", ctx.Err())
+			return ctx.Err()
+		}
+
 		c.logError("single upload failed", "error", err, "source", entry.SourcePath, "target", entry.TargetPath)
 		return fmt.Errorf("rclone upload failed: %w", err)
 	}
@@ -434,8 +448,9 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		cmd := exec.CommandContext(ctx, "rclone", args...)
 		setupRcloneCmd(cmd)
 
-		// Capture stderr for debugging
-		cmd.Stderr = os.Stderr
+		// Capture stderr to avoid direct terminal output after cancellation
+		var stderrBuf bytes.Buffer
+		cmd.Stderr = &stderrBuf
 
 		// Capture output for progress parsing
 		stdout, err := cmd.StdoutPipe()
@@ -448,16 +463,40 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			return fmt.Errorf("failed to start rclone: %w", err)
 		}
 
-		// Parse progress output
+		// Parse progress output with context cancellation support
 		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if progressCallback != nil && strings.Contains(line, "Transferred:") {
-				progressCallback(completed, total, fmt.Sprintf("Uploading batch (%d files)", len(groupEntries)))
+		done := make(chan bool)
+		go func() {
+			defer close(done)
+			for scanner.Scan() {
+				line := scanner.Text()
+				if progressCallback != nil && strings.Contains(line, "Transferred:") {
+					progressCallback(completed, total, fmt.Sprintf("Uploading batch (%d files)", len(groupEntries)))
+				}
 			}
+		}()
+
+		// Wait for either scanning to complete or context cancellation
+		select {
+		case <-done:
+			// Scanning completed normally
+		case <-ctx.Done():
+			// Context cancelled - rclone should terminate due to CommandContext
+			c.logDebug("upload cancelled by context", "dir", targetDir)
 		}
 
 		if err := cmd.Wait(); err != nil {
+			// Log stderr output for debugging
+			if stderrOutput := stderrBuf.String(); stderrOutput != "" {
+				c.logError("rclone stderr output", "stderr", stderrOutput)
+			}
+
+			// Check if error was due to context cancellation
+			if ctx.Err() != nil {
+				c.logDebug("rclone batch cancelled", "dir", targetDir, "context_err", ctx.Err())
+				return ctx.Err()
+			}
+
 			c.logError("rclone batch failed", "error", err, "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())
 			// Mark all entries in this batch as failed
 			for _, entry := range groupEntries {
