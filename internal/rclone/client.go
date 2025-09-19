@@ -24,6 +24,17 @@ type Client struct {
 	logLevel     string
 }
 
+// setupRcloneCmd configures an rclone command with proper environment
+func setupRcloneCmd(cmd *exec.Cmd) {
+	// Inherit the parent process's environment to ensure rclone has access to config
+	cmd.Env = os.Environ()
+
+	// Set working directory to user home to help rclone find config files
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		cmd.Dir = homeDir
+	}
+}
+
 // NewClient creates a new rclone client
 func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, logger *logger.Logger, logLevel string) *Client {
 	return &Client{
@@ -62,6 +73,7 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 
 	// Execute rclone command
 	cmd := exec.CommandContext(ctx, "rclone", args...)
+	setupRcloneCmd(cmd)
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
@@ -178,6 +190,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 
 		// Execute batch rclone command
 		cmd := exec.CommandContext(ctx, "rclone", args...)
+		setupRcloneCmd(cmd)
 
 		// Capture output for progress parsing
 		stdout, err := cmd.StdoutPipe()
@@ -245,6 +258,7 @@ func (c *Client) CheckRemoteExists(ctx context.Context, remotePath string) (bool
 	fullPath := fmt.Sprintf("%s:%s", c.remote, remotePath)
 
 	cmd := exec.CommandContext(ctx, "rclone", "lsf", fullPath)
+	setupRcloneCmd(cmd)
 	output, err := cmd.Output()
 
 	if err != nil {
@@ -277,6 +291,7 @@ func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.
 	for dir := range dirs {
 		remotePath := fmt.Sprintf("%s:%s", c.remote, dir)
 		cmd := exec.CommandContext(ctx, "rclone", "lsf", remotePath, "-R")
+		setupRcloneCmd(cmd)
 		output, err := cmd.Output()
 
 		if err != nil {
@@ -301,6 +316,7 @@ func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.
 func (c *Client) listAllRemoteFiles(ctx context.Context) (map[string]bool, error) {
 	remotePath := fmt.Sprintf("%s:", c.remote)
 	cmd := exec.CommandContext(ctx, "rclone", "lsf", remotePath, "-R")
+	setupRcloneCmd(cmd)
 	output, err := cmd.Output()
 
 	if err != nil {
@@ -329,32 +345,13 @@ func (c *Client) VerifyUpload(ctx context.Context, entry manifest.Entry) error {
 
 	// Use rclone check to verify the file
 	cmd := exec.CommandContext(ctx, "rclone", "check", entry.SourcePath, fullPath)
+	setupRcloneCmd(cmd)
 
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
 	return nil
-}
-
-// GetRemoteSize gets the size of a remote file
-func (c *Client) GetRemoteSize(ctx context.Context, remotePath string) (int64, error) {
-	fullPath := fmt.Sprintf("%s:%s", c.remote, remotePath)
-
-	cmd := exec.CommandContext(ctx, "rclone", "size", fullPath, "--json")
-	output, err := cmd.Output()
-
-	if err != nil {
-		return 0, fmt.Errorf("failed to get remote size: %w", err)
-	}
-
-	// Parse the JSON output (simplified)
-	// In a real implementation, you'd properly parse the JSON
-	if strings.Contains(string(output), "\"bytes\":") {
-		return 0, nil // Placeholder - would parse actual size
-	}
-
-	return 0, nil
 }
 
 // ValidateRcloneInstallation checks if rclone is available and properly configured
@@ -367,6 +364,7 @@ func ValidateRcloneInstallation() error {
 
 	// Check rclone version
 	cmd := exec.Command("rclone", "version")
+	setupRcloneCmd(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to get rclone version: %w", err)
@@ -383,6 +381,7 @@ func ValidateRcloneInstallation() error {
 // ValidateRemote checks if the specified remote is configured
 func ValidateRemote(remote string) error {
 	cmd := exec.Command("rclone", "listremotes")
+	setupRcloneCmd(cmd)
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to list rclone remotes: %w", err)
@@ -402,12 +401,26 @@ func ValidateRemote(remote string) error {
 
 // ValidateRemoteAuthentication tests if the remote is accessible and authenticated
 func ValidateRemoteAuthentication(remote string) error {
-	// Test authentication by trying to list the root directory
-	cmd := exec.Command("rclone", "lsf", remote+":", "--max-depth", "1")
-	cmd.Stderr = nil // Suppress stderr to avoid credential prompts
+	// Extract remote name from full remote path (e.g., "GoogleDriveRemote:path/to/dir" -> "GoogleDriveRemote")
+	remoteName := remote
+	if colonIndex := strings.Index(remote, ":"); colonIndex != -1 {
+		remoteName = remote[:colonIndex]
+	}
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("remote authentication failed - credentials may be expired or invalid: %w", err)
+	// First check if rclone is available in PATH
+	rclonePath, err := exec.LookPath("rclone")
+	if err != nil {
+		return fmt.Errorf("rclone binary not found in PATH: %w", err)
+	}
+
+	// Test authentication by trying to list the remote root directory
+	cmd := exec.Command("rclone", "lsf", remoteName+":", "--max-depth", "1")
+	setupRcloneCmd(cmd)
+
+	// Capture both stdout and stderr to get better error information
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("remote authentication failed - rclone path: %s, error: %v, output: %s", rclonePath, err, string(output))
 	}
 
 	return nil
