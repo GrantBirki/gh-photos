@@ -98,8 +98,8 @@ type TrailManager struct {
 	trail      *Trail
 }
 
-// NewTrailManager creates a new audit trail manager
-func NewTrailManager(cliVersion string) (*TrailManager, error) {
+// CreateTrailManager creates a new audit trail manager
+func CreateTrailManager(cliVersion string) (*TrailManager, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user home directory: %w", err)

@@ -43,7 +43,7 @@ func TestBuildRemotePathConsistency(t *testing.T) {
 				Level:  logger.LevelInfo,
 			}
 			l := logger.New(config)
-			client := NewClient(tt.remote, 1, false, false, false, l, "info")
+			client := CreateClient(tt.remote, 1, false, false, false, l, "info")
 			result := client.buildRemotePath(tt.targetPath)
 			if result != tt.expected {
 				t.Errorf("buildRemotePath() = %v, want %v", result, tt.expected)
@@ -68,7 +68,7 @@ func TestFindExtractionMetadataFile(t *testing.T) {
 		Level:  logger.LevelInfo,
 	}
 	l := logger.New(config)
-	client := NewClient("test-remote", 1, false, false, false, l, "info")
+	client := CreateClient("test-remote", 1, false, false, false, l, "info")
 
 	// Test with no backup path set
 	result := client.findExtractionMetadataFile()
@@ -101,7 +101,7 @@ func TestMetadataUploadDryRun(t *testing.T) {
 	l := logger.New(config)
 
 	// Create client in dry run mode
-	client := NewClient("test-remote:", 1, false, true, false, l, "debug")
+	client := CreateClient("test-remote:", 1, false, true, false, l, "debug")
 
 	// Test dry run - should skip upload
 	err := client.testRemoteWriteCapabilityStartup()

@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewTrailManager(t *testing.T) {
-	tm, err := NewTrailManager("test-version")
+	tm, err := CreateTrailManager("test-version")
 	if err != nil {
 		t.Fatalf("Failed to create trail manager: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestNewTrailManager(t *testing.T) {
 }
 
 func TestSetDeviceInfo(t *testing.T) {
-	tm, err := NewTrailManager("test-version")
+	tm, err := CreateTrailManager("test-version")
 	if err != nil {
 		t.Fatalf("Failed to create trail manager: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestSetDeviceInfo(t *testing.T) {
 }
 
 func TestSetInvocation(t *testing.T) {
-	tm, err := NewTrailManager("test-version")
+	tm, err := CreateTrailManager("test-version")
 	if err != nil {
 		t.Fatalf("Failed to create trail manager: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestSetInvocation(t *testing.T) {
 }
 
 func TestAddAsset(t *testing.T) {
-	tm, err := NewTrailManager("test-version")
+	tm, err := CreateTrailManager("test-version")
 	if err != nil {
 		t.Fatalf("Failed to create trail manager: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestFinalize(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Override the trail directory for testing
-	tm, err := NewTrailManager("test-version")
+	tm, err := CreateTrailManager("test-version")
 	if err != nil {
 		t.Fatalf("Failed to create trail manager: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestLoadManifest(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	// Create and finalize a trail
-	tm, err := NewTrailManager("test-version")
+	tm, err := CreateTrailManager("test-version")
 	if err != nil {
 		t.Fatalf("Failed to create trail manager: %v", err)
 	}

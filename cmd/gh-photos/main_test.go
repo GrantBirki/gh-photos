@@ -7,7 +7,7 @@ import (
 )
 
 func TestNewRootCommand(t *testing.T) {
-	cmd := NewRootCommand()
+	cmd := CreateRootCommand()
 
 	assert.Equal(t, "gh-photos", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
@@ -16,7 +16,7 @@ func TestNewRootCommand(t *testing.T) {
 }
 
 func TestNewSyncCommand(t *testing.T) {
-	cmd := NewSyncCommand()
+	cmd := CreateSyncCommand()
 
 	assert.Equal(t, "sync <backup-path> <remote>", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
@@ -38,14 +38,14 @@ func TestNewSyncCommand(t *testing.T) {
 }
 
 func TestNewValidateCommand(t *testing.T) {
-	cmd := NewValidateCommand()
+	cmd := CreateValidateCommand()
 
 	assert.Equal(t, "validate [backup-path]", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
 }
 
 func TestNewListCommand(t *testing.T) {
-	cmd := NewListCommand()
+	cmd := CreateListCommand()
 
 	assert.Equal(t, "list <backup-path>", cmd.Use)
 	assert.NotEmpty(t, cmd.Short)
@@ -53,7 +53,7 @@ func TestNewListCommand(t *testing.T) {
 }
 
 func TestRootCommandLogLevel(t *testing.T) {
-	cmd := NewRootCommand()
+	cmd := CreateRootCommand()
 
 	// Check that log-level flag exists and has correct default
 	logLevelFlag := cmd.PersistentFlags().Lookup("log-level")

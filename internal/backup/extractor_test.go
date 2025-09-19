@@ -184,7 +184,7 @@ func TestNewExtractor(t *testing.T) {
 			defer os.RemoveAll(tempDir)
 
 			config := tt.setupFunc(tempDir)
-			extractor, err := NewExtractor(config)
+			extractor, err := CreateExtractor(config)
 
 			if tt.shouldError {
 				assert.Error(t, err)
@@ -246,6 +246,6 @@ func TestValidateManifestSchema(t *testing.T) {
 		Logger:     logger,
 	}
 
-	_, err = NewExtractor(config)
+	_, err = CreateExtractor(config)
 	assert.Error(t, err) // Should fail because no valid backup exists
 }

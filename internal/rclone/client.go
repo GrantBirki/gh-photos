@@ -26,8 +26,9 @@ type Client struct {
 	remotePreScan       bool
 	logger              *logger.Logger
 	logLevel            string
-	backupPath          string // Added to support metadata file discovery
-	startupTestComplete bool   // Track if startup connectivity test has been done
+	backupPath          string        // Added to support metadata file discovery
+	batchTimeout        time.Duration // Timeout for individual batch operations
+	startupTestComplete bool          // Track if startup connectivity test has been done
 
 	// Cached link capability detection to avoid repeated failing syscalls on Windows
 	symlinkCapChecked bool
@@ -254,8 +255,8 @@ func setupRcloneCmd(cmd *exec.Cmd) {
 	}
 }
 
-// NewClient creates a new rclone client
-func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, logger *logger.Logger, logLevel string) *Client {
+// CreateClient creates a new rclone client
+func CreateClient(remote string, parallel int, verify, dryRun, skipExisting bool, logger *logger.Logger, logLevel string) *Client {
 	return &Client{
 		remote:        remote,
 		parallel:      parallel,
@@ -265,12 +266,18 @@ func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, l
 		remotePreScan: false, // Disabled for now
 		logger:        logger,
 		logLevel:      logLevel,
+		batchTimeout:  30 * time.Minute, // Default 30 minute timeout per batch
 	}
 }
 
 // SetBackupPath sets the backup path for metadata file discovery
 func (c *Client) SetBackupPath(backupPath string) {
 	c.backupPath = backupPath
+}
+
+// SetBatchTimeout sets the timeout for individual batch operations
+func (c *Client) SetBatchTimeout(timeout time.Duration) {
+	c.batchTimeout = timeout
 }
 
 // getBaseRemote extracts the base remote name from the remote specification
@@ -589,7 +596,11 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 
 		c.logDebug("executing rclone batch", "dir", targetDir, "file_count", len(groupEntries), "args", strings.Join(args, " "))
 
-		cmd := exec.CommandContext(ctx, "rclone", args...)
+		// Create a timeout context for this batch operation
+		batchCtx, batchCancel := context.WithTimeout(ctx, c.batchTimeout)
+		defer batchCancel()
+
+		cmd := exec.CommandContext(batchCtx, "rclone", args...)
 		setupRcloneCmd(cmd)
 
 		// Capture stderr to avoid direct terminal output after cancellation
@@ -610,13 +621,26 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		// Parse progress output with context cancellation support
 		scanner := bufio.NewScanner(stdout)
 		done := make(chan bool)
+		scanErr := make(chan error, 1)
+
 		go func() {
 			defer close(done)
 			for scanner.Scan() {
-				line := scanner.Text()
-				if progressCallback != nil && strings.Contains(line, "Transferred:") {
-					progressCallback(completed, total, fmt.Sprintf("Uploading batch (%d files)", len(groupEntries)))
+				select {
+				case <-batchCtx.Done():
+					// Context cancelled, stop reading
+					scanErr <- batchCtx.Err()
+					return
+				default:
+					line := scanner.Text()
+					c.logDebug("rclone output", "line", line)
+					if progressCallback != nil && strings.Contains(line, "Transferred:") {
+						progressCallback(completed, total, fmt.Sprintf("Uploading batch (%d files)", len(groupEntries)))
+					}
 				}
+			}
+			if err := scanner.Err(); err != nil {
+				scanErr <- err
 			}
 		}()
 
@@ -624,9 +648,16 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		select {
 		case <-done:
 			// Scanning completed normally
-		case <-ctx.Done():
+		case err := <-scanErr:
+			// Error during scanning
+			c.logDebug("error during stdout scanning", "error", err, "dir", targetDir)
+		case <-batchCtx.Done():
 			// Context cancelled - rclone should terminate due to CommandContext
-			c.logDebug("upload cancelled by context", "dir", targetDir)
+			if batchCtx.Err() == context.DeadlineExceeded {
+				c.logError("rclone batch timed out", "dir", targetDir, "timeout", c.batchTimeout)
+			} else {
+				c.logDebug("upload cancelled by context", "dir", targetDir)
+			}
 		}
 
 		if err := cmd.Wait(); err != nil {
@@ -635,10 +666,14 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 				c.logError("rclone stderr output", "stderr", stderrOutput)
 			}
 
-			// Check if error was due to context cancellation
-			if ctx.Err() != nil {
-				c.logDebug("rclone batch cancelled", "dir", targetDir, "context_err", ctx.Err())
-				return ctx.Err()
+			// Check if error was due to context cancellation or timeout
+			if batchCtx.Err() != nil {
+				if batchCtx.Err() == context.DeadlineExceeded {
+					c.logError("rclone batch failed due to timeout", "dir", targetDir, "timeout", c.batchTimeout)
+					return fmt.Errorf("batch upload timed out after %v", c.batchTimeout)
+				}
+				c.logDebug("rclone batch cancelled", "dir", targetDir, "context_err", batchCtx.Err())
+				return batchCtx.Err()
 			}
 
 			c.logError("rclone batch failed", "error", err, "dir", targetDir, "files", len(groupEntries), "exit_code", cmd.ProcessState.ExitCode())

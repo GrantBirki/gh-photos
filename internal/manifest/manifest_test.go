@@ -16,7 +16,7 @@ func TestGenerator_CreateManifest(t *testing.T) {
 		Parallel:               4,
 	}
 
-	generator := NewGenerator("/test/backup", "gdrive:Photos", config)
+	generator := CreateGenerator("/test/backup", "gdrive:Photos", config)
 
 	// Create test assets
 	now := time.Now()
