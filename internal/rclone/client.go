@@ -110,6 +110,55 @@ func (c *Client) buildRemotePath(subPath string) string {
 	return result
 }
 
+// createFileLink creates a symlink with Windows fallback support
+// On Windows, if symlink creation fails (due to permissions), it falls back to hard links
+// and if that fails, copies the file content
+func (c *Client) createFileLink(sourcePath, targetPath string) error {
+	// First, try creating a symlink (works on Unix and Windows with proper permissions)
+	err := os.Symlink(sourcePath, targetPath)
+	if err == nil {
+		c.logDebug("symlink created successfully", "source", sourcePath, "target", targetPath)
+		return nil
+	}
+
+	c.logDebug("symlink failed, trying hard link", "error", err, "source", sourcePath, "target", targetPath)
+
+	// Fallback 1: Try hard link (works on Windows without special permissions)
+	err = os.Link(sourcePath, targetPath)
+	if err == nil {
+		c.logDebug("hard link created successfully", "source", sourcePath, "target", targetPath)
+		return nil
+	}
+
+	c.logDebug("hard link failed, copying file content", "error", err, "source", sourcePath, "target", targetPath)
+
+	// Fallback 2: Copy file content (always works but uses disk space)
+	return c.copyFile(sourcePath, targetPath)
+}
+
+// copyFile copies file content from source to target
+func (c *Client) copyFile(sourcePath, targetPath string) error {
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("failed to open source file: %w", err)
+	}
+	defer sourceFile.Close()
+
+	targetFile, err := os.Create(targetPath)
+	if err != nil {
+		return fmt.Errorf("failed to create target file: %w", err)
+	}
+	defer targetFile.Close()
+
+	_, err = targetFile.ReadFrom(sourceFile)
+	if err != nil {
+		return fmt.Errorf("failed to copy file content: %w", err)
+	}
+
+	c.logDebug("file copied successfully", "source", sourcePath, "target", targetPath)
+	return nil
+}
+
 // Helper logging methods to avoid nil checks everywhere
 func (c *Client) logDebug(msg string, args ...any) {
 	if c.logger != nil {
@@ -155,7 +204,13 @@ func (c *Client) logTempDirStructure(tempDir string) {
 		if info.IsDir() {
 			c.logDebug("temp dir structure", "type", "directory", "path", relPath)
 		} else {
-			c.logDebug("temp dir structure", "type", "file", "path", relPath, "size", info.Size())
+			linkType := "unknown"
+			if info.Mode()&os.ModeSymlink != 0 {
+				linkType = "symlink"
+			} else if info.Mode().IsRegular() {
+				linkType = "regular_file"
+			}
+			c.logDebug("temp dir structure", "type", "file", "path", relPath, "size", info.Size(), "link_type", linkType)
 		}
 
 		return nil
@@ -480,12 +535,11 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 				return fmt.Errorf("failed to create temp directory structure: %w", err)
 			}
 
-			// Create symlink to avoid copying large files
-			if err := os.Symlink(entry.SourcePath, tempTargetPath); err != nil {
-				c.logError("failed to create symlink", "error", err, "source", entry.SourcePath, "target", tempTargetPath)
-				return fmt.Errorf("failed to create symlink: %w", err)
+			// Create symlink to avoid copying large files, with Windows fallback
+			if err := c.createFileLink(entry.SourcePath, tempTargetPath); err != nil {
+				c.logError("failed to create file link", "error", err, "source", entry.SourcePath, "target", tempTargetPath)
+				return fmt.Errorf("failed to create file link: %w", err)
 			}
-			c.logDebug("symlink created", "source", entry.SourcePath, "link", tempTargetPath)
 		}
 
 		// Build rclone command for batch upload
@@ -536,12 +590,50 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 
 		// Execute batch rclone command
+		c.logDebug("=== RCLONE BATCH COMMAND COMPARISON ===")
+		c.logDebug("BATCH UPLOAD rclone command", "full_command", "rclone "+strings.Join(args, " "))
+		c.logDebug("BATCH UPLOAD command breakdown",
+			"command", "rclone copy",
+			"source", tempDir,
+			"destination", dest,
+			"additional_flags", args[3:], // Everything after source and dest
+		)
+		c.logDebug("Compare with METADATA upload which uses: rclone copyto <source> <exact_destination>")
+		c.logDebug("=== END RCLONE COMMAND COMPARISON ===")
+
 		c.logDebug("executing rclone batch", "dir", targetDir, "file_count", len(groupEntries), "args", strings.Join(args, " "))
 		c.logDebug("temp directory contents before rclone", "temp_dir", tempDir)
 
 		// Log the actual directory structure being uploaded for debugging
 		if c.logLevel == "debug" {
 			c.logTempDirStructure(tempDir)
+
+			// Additional debugging: Test if symlinks are working by checking one file
+			if len(groupEntries) > 0 {
+				testEntry := groupEntries[0]
+				normalizedTestPath := strings.ReplaceAll(testEntry.TargetPath, "\\", "/")
+				testTempPath := filepath.Join(tempDir, normalizedTestPath)
+
+				// Check if symlink is readable
+				if info, err := os.Stat(testTempPath); err != nil {
+					c.logError("symlink stat failed", "error", err, "symlink_path", testTempPath)
+				} else {
+					c.logDebug("symlink verification", "symlink_path", testTempPath, "size", info.Size(), "is_symlink", info.Mode()&os.ModeSymlink != 0)
+				}
+
+				// Try to read a few bytes to ensure symlink works
+				if file, err := os.Open(testTempPath); err != nil {
+					c.logError("symlink open failed", "error", err, "symlink_path", testTempPath)
+				} else {
+					buffer := make([]byte, 100)
+					if n, err := file.Read(buffer); err != nil {
+						c.logError("symlink read failed", "error", err, "symlink_path", testTempPath)
+					} else {
+						c.logDebug("symlink read successful", "symlink_path", testTempPath, "bytes_read", n)
+					}
+					file.Close()
+				}
+			}
 		}
 
 		cmd := exec.CommandContext(ctx, "rclone", args...)
