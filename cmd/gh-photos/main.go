@@ -154,6 +154,7 @@ Examples:
 	cmd.Flags().BoolVar(&config.IncludeRecentlyDeleted, "include-recently-deleted", false, "include assets flagged as recently deleted")
 	cmd.Flags().BoolVar(&config.DryRun, "dry-run", false, "preview operations without uploading")
 	cmd.Flags().BoolVar(&config.SkipExisting, "skip-existing", true, "skip files that already exist on remote")
+	cmd.Flags().BoolVar(&config.RemotePreScan, "remote-pre-scan", false, "pre-scan remote to mark existing files before upload (slower; by default rely on rclone's own existence checks)")
 	var forceOverwrite bool
 	cmd.Flags().BoolVar(&forceOverwrite, "force-overwrite", false, "overwrite existing files on remote (opposite of --skip-existing)")
 	cmd.Flags().BoolVar(&config.Verify, "verify", false, "verify uploaded files match source")

@@ -27,6 +27,7 @@ type Config struct {
 	IncludeRecentlyDeleted bool
 	DryRun                 bool
 	SkipExisting           bool
+	RemotePreScan          bool // new: optionally pre-scan remote to mark skips before upload
 	Verify                 bool
 	Parallel               int
 	StartDate              *time.Time
@@ -69,15 +70,15 @@ func NewUploader(config Config) (*Uploader, error) {
 
 	// Validate rclone installation
 	if !config.DryRun {
-		if err := rclone.ValidateRcloneInstallation(); err != nil {
+		if err := rclone.ValidateRcloneInstallation(logger); err != nil {
 			return nil, fmt.Errorf("rclone validation failed: %w", err)
 		}
 
-		if err := rclone.ValidateRemote(config.Remote); err != nil {
+		if err := rclone.ValidateRemote(config.Remote, logger); err != nil {
 			return nil, fmt.Errorf("remote validation failed: %w", err)
 		}
 
-		if err := rclone.ValidateRemoteAuthentication(config.Remote); err != nil {
+		if err := rclone.ValidateRemoteAuthentication(config.Remote, logger); err != nil {
 			return nil, fmt.Errorf("remote authentication failed: %w", err)
 		}
 	}
@@ -97,6 +98,7 @@ func NewUploader(config Config) (*Uploader, error) {
 		config.SkipExisting,
 		logger,
 		config.LogLevel,
+		config.RemotePreScan,
 	)
 
 	// Create audit trail manager

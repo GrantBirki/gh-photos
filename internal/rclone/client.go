@@ -15,13 +15,36 @@ import (
 
 // Client wraps rclone operations
 type Client struct {
-	remote       string
-	parallel     int
-	verify       bool
-	dryRun       bool
-	skipExisting bool
-	logger       *logger.Logger
-	logLevel     string
+	remote        string
+	parallel      int
+	verify        bool
+	dryRun        bool
+	skipExisting  bool
+	remotePreScan bool
+	logger        *logger.Logger
+	logLevel      string
+}
+
+// helper logging methods to avoid nil checks everywhere
+func (c *Client) logDebug(msg string, args ...any) {
+	if c != nil && c.logger != nil {
+		c.logger.Debug(msg, args...)
+	}
+}
+func (c *Client) logInfo(msg string, args ...any) {
+	if c != nil && c.logger != nil {
+		c.logger.Info(msg, args...)
+	}
+}
+func (c *Client) logWarn(msg string, args ...any) {
+	if c != nil && c.logger != nil {
+		c.logger.Warn(msg, args...)
+	}
+}
+func (c *Client) logError(msg string, args ...any) {
+	if c != nil && c.logger != nil {
+		c.logger.Error(msg, args...)
+	}
 }
 
 // setupRcloneCmd configures an rclone command with proper environment
@@ -36,16 +59,31 @@ func setupRcloneCmd(cmd *exec.Cmd) {
 }
 
 // NewClient creates a new rclone client
-func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, logger *logger.Logger, logLevel string) *Client {
-	return &Client{
-		remote:       remote,
-		parallel:     parallel,
-		verify:       verify,
-		dryRun:       dryRun,
-		skipExisting: skipExisting,
-		logger:       logger,
-		logLevel:     logLevel,
+func NewClient(remote string, parallel int, verify, dryRun, skipExisting bool, logger *logger.Logger, logLevel string, remotePreScan ...bool) *Client {
+	preScan := false
+	if len(remotePreScan) > 0 {
+		preScan = remotePreScan[0]
 	}
+	c := &Client{
+		remote:        remote,
+		parallel:      parallel,
+		verify:        verify,
+		dryRun:        dryRun,
+		skipExisting:  skipExisting,
+		remotePreScan: preScan,
+		logger:        logger,
+		logLevel:      logLevel,
+	}
+	c.logDebug("rclone client created",
+		"remote", remote,
+		"parallel", parallel,
+		"verify", verify,
+		"dry_run", dryRun,
+		"skip_existing", skipExisting,
+		"remote_pre_scan", preScan,
+		"log_level", logLevel,
+	)
+	return c
 }
 
 // UploadEntry uploads a single manifest entry
@@ -53,6 +91,7 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	if c.dryRun {
 		fmt.Printf("[DRY-RUN] Would upload: %s -> %s:%s\n",
 			entry.SourcePath, c.remote, entry.TargetPath)
+		c.logInfo("dry-run upload entry", "source", entry.SourcePath, "dest_remote", c.remote, "dest_path", entry.TargetPath)
 		return nil
 	}
 
@@ -71,15 +110,23 @@ func (c *Client) UploadEntry(ctx context.Context, entry manifest.Entry) error {
 	args = append(args, entry.SourcePath)
 	args = append(args, fmt.Sprintf("%s:%s", c.remote, entry.TargetPath))
 
+	c.logDebug("starting single file upload",
+		"source", entry.SourcePath,
+		"target", entry.TargetPath,
+		"remote", c.remote,
+		"args", strings.Join(args, " "))
+
 	// Execute rclone command
 	cmd := exec.CommandContext(ctx, "rclone", args...)
 	setupRcloneCmd(cmd)
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
+		c.logError("single upload failed", "error", err, "source", entry.SourcePath, "target", entry.TargetPath)
 		return fmt.Errorf("rclone upload failed: %w", err)
 	}
 
+	c.logDebug("single file upload complete", "source", entry.SourcePath, "target", entry.TargetPath)
 	return nil
 }
 
@@ -90,8 +137,10 @@ type ProgressCallback func(completed, total int, currentFile string)
 // This single method handles all upload operations regardless of dataset size for optimal performance
 func (c *Client) UploadBatch(ctx context.Context, entries []manifest.Entry, updateCallback func(int, manifest.OperationStatus, string), progressCallback ProgressCallback) error {
 	if len(entries) == 0 {
+		c.logInfo("no entries provided to UploadBatch")
 		return nil
 	}
+	c.logInfo("starting batch upload", "entries", len(entries))
 	// Handle dry run mode - just report what would be uploaded
 	if c.dryRun {
 		for i, entry := range entries {
@@ -100,11 +149,13 @@ func (c *Client) UploadBatch(ctx context.Context, entries []manifest.Entry, upda
 			}
 			fmt.Printf("[DRY-RUN] Would upload: %s -> %s:%s\n",
 				entry.SourcePath, c.remote, entry.TargetPath)
+			c.logDebug("dry-run batch entry", "index", i, "source", entry.SourcePath, "target", entry.TargetPath)
 			updateCallback(i, manifest.StatusUploaded, "")
 		}
 		if progressCallback != nil {
 			progressCallback(len(entries), len(entries), "")
 		}
+		c.logInfo("dry-run batch upload complete")
 		return nil
 	}
 
@@ -116,6 +167,7 @@ func (c *Client) UploadBatch(ctx context.Context, entries []manifest.Entry, upda
 		chunkSize = 100 // Medium chunks for moderate datasets
 	}
 
+	c.logDebug("calculated chunk size", "chunk_size", chunkSize)
 	// Process entries in chunks
 	for i := 0; i < len(entries); i += chunkSize {
 		end := i + chunkSize
@@ -124,11 +176,13 @@ func (c *Client) UploadBatch(ctx context.Context, entries []manifest.Entry, upda
 		}
 
 		chunk := entries[i:end]
+		c.logDebug("processing chunk", "start_index", i, "end_index", end, "chunk_len", len(chunk))
 		if err := c.uploadChunk(ctx, chunk, entries, i, updateCallback, progressCallback); err != nil {
 			return err
 		}
 	}
 
+	c.logInfo("batch upload complete")
 	return nil
 }
 
@@ -143,18 +197,22 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 		dirGroups[dir] = append(dirGroups[dir], entry)
 	}
+	c.logDebug("upload chunk grouping complete", "groups", len(dirGroups), "base_index", baseIndex)
 
 	completed := baseIndex
 	total := len(allEntries)
 
 	// Process each directory group
 	for targetDir, groupEntries := range dirGroups {
+		c.logDebug("processing directory group", "dir", targetDir, "files", len(groupEntries))
 		// Create temporary directory for this batch
 		tempDir, err := os.MkdirTemp("", "gh-photos-batch-*")
 		if err != nil {
+			c.logError("temp directory creation failed", "error", err)
 			return fmt.Errorf("failed to create temp directory: %w", err)
 		}
 		defer os.RemoveAll(tempDir)
+		c.logDebug("created temp directory", "path", tempDir)
 
 		// Create directory structure and copy files to temp location
 		for _, entry := range groupEntries {
@@ -170,8 +228,10 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 
 			// Create symlink to avoid copying large files
 			if err := os.Symlink(entry.SourcePath, tempTargetPath); err != nil {
+				c.logError("failed to create symlink", "error", err, "source", entry.SourcePath, "target", tempTargetPath)
 				return fmt.Errorf("failed to create symlink: %w", err)
 			}
+			c.logDebug("symlink created", "source", entry.SourcePath, "link", tempTargetPath)
 		}
 
 		// Build rclone command for batch upload
@@ -189,6 +249,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		args = append(args, "--progress", "--stats-one-line")
 
 		// Execute batch rclone command
+		c.logDebug("executing rclone batch", "dir", targetDir, "file_count", len(groupEntries), "args", strings.Join(args, " "))
 		cmd := exec.CommandContext(ctx, "rclone", args...)
 		setupRcloneCmd(cmd)
 
@@ -199,6 +260,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 
 		if err := cmd.Start(); err != nil {
+			c.logError("failed to start rclone batch", "error", err, "dir", targetDir)
 			return fmt.Errorf("failed to start rclone: %w", err)
 		}
 
@@ -212,6 +274,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		}
 
 		if err := cmd.Wait(); err != nil {
+			c.logError("rclone batch failed", "error", err, "dir", targetDir, "files", len(groupEntries))
 			// Mark all entries in this batch as failed
 			for _, entry := range groupEntries {
 				// Find original index
@@ -229,6 +292,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			return fmt.Errorf("rclone batch upload failed: %w", err)
 		}
 
+		c.logDebug("rclone batch complete", "dir", targetDir, "files", len(groupEntries))
 		// Mark all entries in this batch as successful
 		for _, entry := range groupEntries {
 			completed++
@@ -263,10 +327,13 @@ func (c *Client) CheckRemoteExists(ctx context.Context, remotePath string) (bool
 
 	if err != nil {
 		// If the command fails, the file doesn't exist
+		c.logDebug("remote file check - not found or error", "path", fullPath, "error", err)
 		return false, nil
 	}
 
-	return strings.TrimSpace(string(output)) != "", nil
+	exists := strings.TrimSpace(string(output)) != ""
+	c.logDebug("remote file check result", "path", fullPath, "exists", exists)
+	return exists, nil
 }
 
 // BatchCheckRemoteExists efficiently checks which files exist on remote by listing all files once
@@ -284,6 +351,7 @@ func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.
 
 	// If we have many different directories, just list everything recursively
 	if len(dirs) > 50 {
+		c.logDebug("many directories - listing entire remote recursively", "dir_count", len(dirs))
 		return c.listAllRemoteFiles(ctx)
 	}
 
@@ -296,6 +364,7 @@ func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.
 
 		if err != nil {
 			// Directory might not exist, continue with others
+			c.logDebug("directory listing failed or does not exist", "dir", dir, "error", err)
 			continue
 		}
 
@@ -307,8 +376,10 @@ func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.
 				existingFiles[fullPath] = true
 			}
 		}
+		c.logDebug("directory listing processed", "dir", dir, "files", len(files))
 	}
 
+	c.logDebug("batch remote existence check complete", "files_found", len(existingFiles))
 	return existingFiles, nil
 }
 
@@ -320,6 +391,7 @@ func (c *Client) listAllRemoteFiles(ctx context.Context) (map[string]bool, error
 	output, err := cmd.Output()
 
 	if err != nil {
+		c.logError("failed to list all remote files", "error", err)
 		return nil, fmt.Errorf("failed to list remote files: %w", err)
 	}
 
@@ -330,6 +402,7 @@ func (c *Client) listAllRemoteFiles(ctx context.Context) (map[string]bool, error
 			existingFiles[file] = true
 		}
 	}
+	c.logDebug("listed all remote files", "count", len(existingFiles))
 
 	return existingFiles, nil
 }
@@ -338,6 +411,7 @@ func (c *Client) listAllRemoteFiles(ctx context.Context) (map[string]bool, error
 func (c *Client) VerifyUpload(ctx context.Context, entry manifest.Entry) error {
 	if c.dryRun {
 		fmt.Printf("[DRY-RUN] Would verify: %s:%s\n", c.remote, entry.TargetPath)
+		c.logInfo("dry-run verify", "target", entry.TargetPath)
 		return nil
 	}
 
@@ -347,15 +421,18 @@ func (c *Client) VerifyUpload(ctx context.Context, entry manifest.Entry) error {
 	cmd := exec.CommandContext(ctx, "rclone", "check", entry.SourcePath, fullPath)
 	setupRcloneCmd(cmd)
 
+	c.logDebug("verifying upload", "source", entry.SourcePath, "target", fullPath)
 	if err := cmd.Run(); err != nil {
+		c.logError("verification failed", "error", err, "source", entry.SourcePath, "target", fullPath)
 		return fmt.Errorf("verification failed: %w", err)
 	}
 
+	c.logDebug("verification successful", "target", fullPath)
 	return nil
 }
 
 // ValidateRcloneInstallation checks if rclone is available and properly configured
-func ValidateRcloneInstallation() error {
+func ValidateRcloneInstallation(log *logger.Logger) error {
 	// Check if rclone is in PATH
 	_, err := exec.LookPath("rclone")
 	if err != nil {
@@ -374,12 +451,15 @@ func ValidateRcloneInstallation() error {
 	if !strings.Contains(version, "rclone") {
 		return fmt.Errorf("unexpected rclone version output: %s", version)
 	}
+	if log != nil {
+		log.Debug("validated rclone installation", "version_output", strings.TrimSpace(version))
+	}
 
 	return nil
 }
 
 // ValidateRemote checks if the specified remote is configured
-func ValidateRemote(remote string) error {
+func ValidateRemote(remote string, log *logger.Logger) error {
 	cmd := exec.Command("rclone", "listremotes")
 	setupRcloneCmd(cmd)
 	output, err := cmd.Output()
@@ -392,6 +472,9 @@ func ValidateRemote(remote string) error {
 
 	for _, r := range remotes {
 		if strings.TrimSpace(r) == remoteName {
+			if log != nil {
+				log.Debug("remote found", "remote", remoteName)
+			}
 			return nil
 		}
 	}
@@ -400,7 +483,7 @@ func ValidateRemote(remote string) error {
 }
 
 // ValidateRemoteAuthentication tests if the remote is accessible and authenticated
-func ValidateRemoteAuthentication(remote string) error {
+func ValidateRemoteAuthentication(remote string, log *logger.Logger) error {
 	// Extract remote name from full remote path (e.g., "GoogleDriveRemote:path/to/dir" -> "GoogleDriveRemote")
 	remoteName := remote
 	if colonIndex := strings.Index(remote, ":"); colonIndex != -1 {
@@ -420,7 +503,13 @@ func ValidateRemoteAuthentication(remote string) error {
 	// Capture both stdout and stderr to get better error information
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		if log != nil {
+			log.Error("remote authentication failed", "remote", remoteName, "error", err, "output", string(output))
+		}
 		return fmt.Errorf("remote authentication failed - rclone path: %s, error: %v, output: %s", rclonePath, err, string(output))
+	}
+	if log != nil {
+		log.Debug("remote authentication successful", "remote", remoteName)
 	}
 
 	return nil
@@ -430,11 +519,11 @@ func ValidateRemoteAuthentication(remote string) error {
 func (c *Client) CreateUploadPlan(ctx context.Context, entries []manifest.Entry) ([]UploadPlanEntry, error) {
 	plan := make([]UploadPlanEntry, 0, len(entries))
 
-	// If skip existing is enabled, batch check all remote files at once
+	// If skip existing and remote pre-scan is enabled, batch check all remote files at once
 	var existingFiles map[string]bool
-	if c.skipExisting {
+	if c.skipExisting && c.remotePreScan {
 		if c.logger != nil {
-			c.logger.Info("Checking existing files on remote (this may take a moment)...", "files_to_check", len(entries))
+			c.logger.Info("Pre-scanning remote for existing files (may be slower)", "files_to_check", len(entries))
 		}
 
 		var err error
@@ -460,20 +549,13 @@ func (c *Client) CreateUploadPlan(ctx context.Context, entries []manifest.Entry)
 
 		if c.skipExisting {
 			var exists bool
-			var err error
 
-			if existingFiles != nil {
+			if existingFiles != nil { // only when remotePreScan enabled
 				// Use batch result
 				exists = existingFiles[entry.TargetPath]
 			} else {
-				// Fall back to individual check
-				exists, err = c.CheckRemoteExists(ctx, entry.TargetPath)
-				if err != nil {
-					planEntry.Action = ActionError
-					planEntry.Error = err.Error()
-					plan = append(plan, planEntry)
-					continue
-				}
+				// No pre-scan: rely on rclone runtime --ignore-existing behavior later.
+				// We don't perform per-file lsf checks to avoid extra API calls.
 			}
 
 			if exists {
@@ -490,7 +572,7 @@ func (c *Client) CreateUploadPlan(ctx context.Context, entries []manifest.Entry)
 		plan = append(plan, planEntry)
 
 		// Progress reporting for large uploads
-		if c.logger != nil && len(entries) > 100 && (i+1)%500 == 0 {
+		if c.logger != nil && len(entries) > 100 && (i+1)%500 == 0 && c.remotePreScan {
 			c.logger.Info("Upload plan progress", "processed", i+1, "total", len(entries))
 		}
 	}
