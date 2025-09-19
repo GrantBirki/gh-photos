@@ -46,6 +46,8 @@ gh ext upgrade photos
 
 The CLI automatically walks directory structures to find your iPhone backup. You can provide any of these common parent directories, and the tool will locate the actual backup folder:
 
+> The folder might look something like this: `C:\Users\<username>\AppData\Roaming\Apple Computer\MobileSync\Backup\<device_uuid>`
+
 ### Windows Backup Locations
 
 ```bash
