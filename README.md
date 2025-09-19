@@ -21,8 +21,8 @@ This project is a [`gh cli`](https://github.com/cli/cli) extension that extracts
 - 🔐 Privacy-safe defaults (excludes Hidden/Recently Deleted albums)
 - ☁️ Supports all **rclone** remotes (Google Drive, S3, OneDrive, etc.)
 - ⚡ Parallel uploads for faster performance
-- � Smart defaults (skips existing files to save bandwidth)
-- �🔍 Asset classification (photos, videos, screenshots, burst, Live Photos)
+- Smart defaults (skips existing files to save bandwidth using rclone's native --ignore-existing)
+- Optional remote pre-scan (`--remote-pre-scan`) to build an upfront skip plan (disabled by default for speed)
 - 📋 Manifest generation for operation auditing
 - 🧪 Dry-run mode for safe testing
 
@@ -171,6 +171,11 @@ gh photos sync /backup GoogleDriveRemote:photos \
   --force-overwrite \
   --verify
 
+# Pre-scan the remote first (slower; only if you need an upfront skip plan)
+gh photos sync /backup GoogleDriveRemote:photos \
+  --remote-pre-scan \
+  --skip-existing
+
 # List assets with filtering
 gh photos list /backup \
   --include-hidden \
@@ -198,6 +203,7 @@ gh photos list /backup \
 | `--include-recently-deleted` | Include assets flagged as recently deleted | `false` |
 | `--dry-run` | Preview operations without uploading | `false` |
 | `--skip-existing` | Skip files that already exist on remote (smart default) | `true` |
+| `--remote-pre-scan` | Pre-scan remote to mark existing files before upload (slower; default is to skip during transfer) | `false` |
 | `--force-overwrite` | Overwrite existing files on remote (opposite of --skip-existing) | `false` |
 | `--verify` | Verify uploaded files match source | `false` |
 | `--checksum` | Compute SHA256 checksums for assets | `false` |
@@ -226,6 +232,35 @@ gh photos list /backup \
 | `--skip-existing` | Skip files that already exist in output directory | `false` |
 | `--verify` | Verify extracted files by comparing checksums (significantly slows extraction) | `false` |
 | `--progress` | Show extraction progress during operation | `true` |
+
+### Remote Existence & Skipping Strategy
+
+By default, `gh-photos` does **not** enumerate the entire remote. It relies on rclone's native `--ignore-existing` behavior during transfer. This keeps startup fast and avoids potentially slow/fragile deep listings (e.g. on Google Drive).
+
+You can choose between three modes:
+
+| Mode | Flags | Behavior | Pros | Cons |
+|------|-------|----------|------|------|
+| Fast incremental (default) | `--skip-existing` (implicit) | No pre-listing; rclone skips as it copies | Fast start, minimal API calls | Upload plan can't pre-label skips |
+| Pre-scan (explicit) | `--skip-existing --remote-pre-scan` | Lists remote paths to mark skips before uploading | Upfront insight (plan shows skip vs upload) | Slower start, more API requests |
+| Force overwrite | `--force-overwrite` | Always uploads, overwriting existing | Ensures replacement | Extra bandwidth / potential remote versioning |
+
+Recommendation: Only use `--remote-pre-scan` if you specifically need a detailed pre-upload plan. Otherwise stick with the default fast mode.
+
+### Environment Variables
+
+`LOG_LEVEL` can be set to override the default logging level when `--log-level` isn't provided (e.g. `export LOG_LEVEL=debug`).
+
+### Logging
+
+Use `--log-level debug` (or `LOG_LEVEL=debug`) to see:
+
+- rclone client initialization parameters
+- Chunk sizing and batch grouping
+- Remote pre-scan progress (when enabled)
+- Batch upload start/end events and errors
+
+This is especially helpful when diagnosing performance or remote auth issues.
 
 ## Command Metadata 📊
 
