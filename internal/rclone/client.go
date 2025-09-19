@@ -28,6 +28,12 @@ type Client struct {
 	logLevel            string
 	backupPath          string // Added to support metadata file discovery
 	startupTestComplete bool   // Track if startup connectivity test has been done
+
+	// Cached link capability detection to avoid repeated failing syscalls on Windows
+	symlinkCapChecked bool
+	symlinkSupported  bool
+	hardlinkChecked   bool
+	hardlinkSupported bool
 }
 
 // buildRemotePath safely constructs a remote destination path ensuring only one colon
@@ -114,25 +120,78 @@ func (c *Client) buildRemotePath(subPath string) string {
 // On Windows, if symlink creation fails (due to permissions), it falls back to hard links
 // and if that fails, copies the file content
 func (c *Client) createFileLink(sourcePath, targetPath string) error {
-	// First, try creating a symlink (works on Unix and Windows with proper permissions)
-	err := os.Symlink(sourcePath, targetPath)
-	if err == nil {
-		c.logDebug("symlink created successfully", "source", sourcePath, "target", targetPath)
-		return nil
+	// Detect symlink capability once
+	if !c.symlinkCapChecked {
+		c.symlinkCapChecked = true
+		testSrc := sourcePath
+		// create a tiny temp file if needed for capability test
+		if _, err := os.Stat(testSrc); err != nil {
+			tmp, tmpErr := os.CreateTemp("", "gh-photos-linktest-*")
+			if tmpErr == nil {
+				tmp.WriteString("test")
+				tmp.Close()
+				testSrc = tmp.Name()
+				defer os.Remove(testSrc)
+			}
+		}
+		tmpDst, _ := os.CreateTemp("", "gh-photos-linktest-dst-*")
+		tmpDst.Close()
+		os.Remove(tmpDst.Name())
+		if err := os.Symlink(testSrc, tmpDst.Name()); err == nil {
+			c.symlinkSupported = true
+			os.Remove(tmpDst.Name())
+			c.logDebug("symlink capability detected - will use symlinks for staging")
+		} else {
+			c.symlinkSupported = false
+			c.logDebug("symlink capability not available - will skip symlink attempts", "error", err)
+		}
 	}
 
-	c.logDebug("symlink failed, trying hard link", "error", err, "source", sourcePath, "target", targetPath)
-
-	// Fallback 1: Try hard link (works on Windows without special permissions)
-	err = os.Link(sourcePath, targetPath)
-	if err == nil {
-		c.logDebug("hard link created successfully", "source", sourcePath, "target", targetPath)
-		return nil
+	if c.symlinkSupported {
+		if err := os.Symlink(sourcePath, targetPath); err == nil {
+			return nil
+		} else {
+			// If symlink unexpectedly fails repeatedly, disable for remainder
+			c.symlinkSupported = false
+			c.logDebug("disabling symlink usage after failure", "error", err)
+		}
 	}
 
-	c.logDebug("hard link failed, copying file content", "error", err, "source", sourcePath, "target", targetPath)
+	// Detect hard link capability once (generally supported on Windows NTFS & Unix same volume)
+	if !c.hardlinkChecked {
+		c.hardlinkChecked = true
+		testSrc := sourcePath
+		if _, err := os.Stat(testSrc); err != nil {
+			tmp, tmpErr := os.CreateTemp("", "gh-photos-hardlinktest-*")
+			if tmpErr == nil {
+				tmp.WriteString("test")
+				tmp.Close()
+				testSrc = tmp.Name()
+				defer os.Remove(testSrc)
+			}
+		}
+		tmpDst, _ := os.CreateTemp("", "gh-photos-hardlinktest-dst-*")
+		tmpDst.Close()
+		os.Remove(tmpDst.Name())
+		if err := os.Link(testSrc, tmpDst.Name()); err == nil {
+			c.hardlinkSupported = true
+			os.Remove(tmpDst.Name())
+			c.logDebug("hard link capability detected - will use hard links for staging")
+		} else {
+			c.hardlinkSupported = false
+			c.logDebug("hard link capability not available - will copy files for staging", "error", err)
+		}
+	}
 
-	// Fallback 2: Copy file content (always works but uses disk space)
+	if c.hardlinkSupported {
+		if err := os.Link(sourcePath, targetPath); err == nil {
+			return nil
+		} else {
+			c.logDebug("hard link failed, falling back to copy", "error", err)
+		}
+	}
+
+	// Final fallback: copy
 	return c.copyFile(sourcePath, targetPath)
 }
 
@@ -467,6 +526,7 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		defer os.RemoveAll(tempDir)
 
 		// Create directory structure and copy files to temp location
+		filePrepCount := 0
 		for _, entry := range groupEntries {
 			if progressCallback != nil {
 				progressCallback(completed, total, fmt.Sprintf("Preparing %s", filepath.Base(entry.SourcePath)))
@@ -485,6 +545,10 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 			if err := c.createFileLink(entry.SourcePath, tempTargetPath); err != nil {
 				c.logError("failed to create file link", "error", err, "source", entry.SourcePath, "target", tempTargetPath)
 				return fmt.Errorf("failed to create file link: %w", err)
+			}
+			filePrepCount++
+			if filePrepCount%250 == 0 && c.logLevel == "debug" { // periodic staging progress
+				c.logDebug("staging progress", "prepared", filePrepCount, "group_total", len(groupEntries), "dir", targetDir)
 			}
 		}
 
