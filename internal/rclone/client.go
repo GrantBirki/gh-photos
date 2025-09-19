@@ -291,6 +291,22 @@ func (c *Client) getBaseRemote() string {
 	return c.remote
 }
 
+// isGoogleDriveRemote checks if the remote is a Google Drive remote
+func (c *Client) isGoogleDriveRemote() bool {
+	// Extract the remote name (everything before the first colon)
+	remoteName := c.remote
+	if idx := strings.Index(c.remote, ":"); idx != -1 {
+		remoteName = c.remote[:idx]
+	}
+
+	// Check if it's a Google Drive remote by examining the remote name
+	// Common patterns: gdrive, gdrive-backup, my-gdrive, etc.
+	remoteLower := strings.ToLower(remoteName)
+	return strings.Contains(remoteLower, "gdrive") ||
+		strings.Contains(remoteLower, "google") ||
+		strings.Contains(remoteLower, "drive")
+}
+
 // handleDryRunBatch processes batch upload in dry-run mode
 func (c *Client) handleDryRunBatch(entries []manifest.Entry, updateCallback func(int, manifest.OperationStatus, string), progressCallback ProgressCallback) error {
 	for i, entry := range entries {
@@ -586,6 +602,19 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 		// Add symlink following for Windows compatibility
 		args = append(args, "--copy-links")
 
+		// Add parallelization for faster uploads
+		if c.parallel > 1 {
+			args = append(args, fmt.Sprintf("--transfers=%d", c.parallel))
+		}
+
+		// Add Google Drive specific optimizations
+		if c.isGoogleDriveRemote() {
+			args = append(args, "--fast-list")                // 20x faster directory listing
+			args = append(args, "--drive-chunk-size=256M")    // Larger chunks for big files
+			args = append(args, "--drive-upload-cutoff=256M") // When to use resumable uploads
+			args = append(args, "--tpslimit=10")              // Respect API rate limits
+		}
+
 		// Add progress reporting
 		args = append(args, "--progress", "--stats-one-line")
 
@@ -729,7 +758,14 @@ func (c *Client) uploadChunk(ctx context.Context, chunk []manifest.Entry, allEnt
 func (c *Client) CheckRemoteExists(ctx context.Context, remotePath string) (bool, error) {
 	fullPath := fmt.Sprintf("%s:%s", c.remote, remotePath)
 
-	cmd := exec.CommandContext(ctx, "rclone", "lsf", fullPath)
+	args := []string{"lsf", fullPath}
+
+	// Add Google Drive optimizations for single file check
+	if c.isGoogleDriveRemote() {
+		args = append(args, "--fast-list")
+	}
+
+	cmd := exec.CommandContext(ctx, "rclone", args...)
 	setupRcloneCmd(cmd)
 	output, err := cmd.Output()
 
@@ -770,7 +806,14 @@ func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.
 			return existingFiles, ctx.Err()
 		}
 		remotePath := fmt.Sprintf("%s:%s", c.remote, dir)
-		cmd := exec.CommandContext(ctx, "rclone", "lsf", remotePath, "-R")
+		args := []string{"lsf", remotePath, "-R"}
+
+		// Add Google Drive optimizations for directory listing
+		if c.isGoogleDriveRemote() {
+			args = append(args, "--fast-list")
+		}
+
+		cmd := exec.CommandContext(ctx, "rclone", args...)
 		setupRcloneCmd(cmd)
 		output, err := cmd.Output()
 
@@ -798,7 +841,14 @@ func (c *Client) BatchCheckRemoteExists(ctx context.Context, entries []manifest.
 // listAllRemoteFiles lists all files on the remote recursively
 func (c *Client) listAllRemoteFiles(ctx context.Context) (map[string]bool, error) {
 	remotePath := fmt.Sprintf("%s:", c.remote)
-	cmd := exec.CommandContext(ctx, "rclone", "lsf", remotePath, "-R")
+	args := []string{"lsf", remotePath, "-R"}
+
+	// Add Google Drive optimizations for recursive listing
+	if c.isGoogleDriveRemote() {
+		args = append(args, "--fast-list")
+	}
+
+	cmd := exec.CommandContext(ctx, "rclone", args...)
 	setupRcloneCmd(cmd)
 	output, err := cmd.Output()
 
