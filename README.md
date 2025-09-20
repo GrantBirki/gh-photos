@@ -183,6 +183,38 @@ gh photos list /backup \
   --format json
 ```
 
+### The Commands that I use
+
+> Hey @GrantBirki! Read this if you're looking to backup your phone again!
+
+This section is mainly just notes for myself to backup my iPhone periodically.
+
+1. Enter the iPhone unencrypted backup directory:
+
+   ```cmd
+   cd C:\Users\Birki\Apple\MobileSync\Backup\<device_uuid>\
+   ```
+
+2. Extract the current iPhone backup directory to `D:\extracted`
+
+   ```cmd
+   gh photos extract . --output D:\extracted --progress --log-level debug
+   ```
+
+3. Sync the entire backup to Google Drive:
+
+    ```cmd
+    gh photos sync D:\extracted GoogleDriveRemote:Backups/iPhone/ --log-level debug --ignore "Thumbnails/*,derivatives/*" --path-granularity month
+    ```
+
+    > Sync the entire backup to Google Drive. This command is idempotent and can be run over and over again on the same extract directory if needed. For example, if you run it once and it fails half way through, you can simply restart it by running the same command again and it will skip over photos/videos that it has already uploaded (rclone does this by design) and pick back up with uploading the rest of the photos that it needs to.
+
+In the case of your (my) `rclone` token being expired (likely given how in-frequently I do backups) you will need to run this command to get a new token if using Google Drive:
+
+```bash
+rclone config reconnect GoogleDriveRemote: # press "y" and open a browser to finish the re-auth flow through your google account
+```
+
 ### Command Line Options
 
 #### Global Flags
