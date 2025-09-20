@@ -192,7 +192,7 @@ This section is mainly just notes for myself to backup my iPhone periodically.
 1. Enter the iPhone unencrypted backup directory:
 
    ```cmd
-   cd C:\Users\Birki\Apple\MobileSync\Backup\<device_uuid>\
+   cd C:\Users\Birki\Apple\MobileSync\Backup\<device_uuid>
    ```
 
 2. Extract the current iPhone backup directory to `D:\extracted`
